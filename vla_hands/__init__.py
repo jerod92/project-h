@@ -10,14 +10,14 @@ Quick start::
     from vla_hands import VLAGraft, GraftConfig, JoystickAppendage
     from vla_hands import TargetNavEnvironment, TrainingCurriculum, CurriculumConfig
 
-    processor = AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM-Instruct")
-    vlm = AutoModelForVision2Seq.from_pretrained("HuggingFaceTB/SmolVLM-Instruct")
+    processor = AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct")
+    vlm = AutoModelForVision2Seq.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct")
 
     appendage = JoystickAppendage(hidden_dim=vlm.config.hidden_size)
     graft = VLAGraft(vlm=vlm, appendage=appendage)
 
     env = TargetNavEnvironment()
-    curriculum = TrainingCurriculum(graft, processor, env, CurriculumConfig(bc_steps=500))
+    curriculum = TrainingCurriculum(graft, processor, env, CurriculumConfig(bc_steps=200))
     curriculum.run()
 """
 
@@ -40,18 +40,32 @@ from .grafting.freezing import (
 from .appendages.base import ActionSpec, BaseAppendage
 from .appendages.joystick import JoystickAppendage, JoystickAction
 from .appendages.dpad import DPadAppendage, DPadButton, DPAD_DELTA
+from .appendages.button import (
+    ButtonAppendage,
+    ButtonState,
+    MultiButtonAppendage,
+    MultiButtonState,
+)
 
 # Environments
 from .environments.base import BaseEnvironment, EnvStepResult
 from .environments.target_nav import TargetNavEnvironment
+from .environments.spaceship import SpaceshipNavEnvironment
 from .environments.grid_world import GridWorldEnvironment
+from .environments.maze import MazeEnvironment
+from .environments.button_task import ButtonPressEnvironment, MCQButtonEnvironment
 
 # Training
 from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
 from .training.curriculum import TrainingCurriculum, CurriculumConfig
 
 # Benchmarks
-from .benchmarks.suite import BenchmarkSuite, BenchmarkResult, compare_grafts, run_expert_baseline
+from .benchmarks.suite import (
+    BenchmarkSuite,
+    BenchmarkResult,
+    compare_grafts,
+    run_expert_baseline,
+)
 
 __all__ = [
     # Grafting
@@ -73,11 +87,19 @@ __all__ = [
     "DPadAppendage",
     "DPadButton",
     "DPAD_DELTA",
+    "ButtonAppendage",
+    "ButtonState",
+    "MultiButtonAppendage",
+    "MultiButtonState",
     # Environments
     "BaseEnvironment",
     "EnvStepResult",
     "TargetNavEnvironment",
+    "SpaceshipNavEnvironment",
     "GridWorldEnvironment",
+    "MazeEnvironment",
+    "ButtonPressEnvironment",
+    "MCQButtonEnvironment",
     # Training
     "BCTrainer",
     "RLTrainer",
