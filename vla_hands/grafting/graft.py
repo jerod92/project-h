@@ -28,6 +28,13 @@ Q: Saving?
 A: VLM weights are saved separately (via HuggingFace save_pretrained).
    Only the appendage weights are saved in the graft checkpoint, along with a
    JSON config describing the graft. This keeps checkpoints small (MBs, not GBs).
+
+Q: Vision skip connections for TouchscreenAppendage?
+A: When the attached appendage has needs_vision_features=True, VLAGraft registers a
+   forward hook on the VLM's vision encoder.  The hook captures mean-pooled patch
+   embeddings during the forward pass and passes them as vision_features to the
+   appendage alongside the LLM hidden state.  This lets the action head "see" the raw
+   spatial layout of the image, bypassing the LLM's information bottleneck.
 """
 
 import json
@@ -39,6 +46,47 @@ import torch
 import torch.nn as nn
 
 from ..appendages.base import BaseAppendage
+
+
+# ── Vision encoder forward hook ───────────────────────────────────────────────
+
+class _VisionHook:
+    """
+    Forward hook that captures mean-pooled vision encoder output.
+
+    Registered on the vision encoder sub-module of the VLM.  After the VLM's
+    forward pass completes, ``self.features`` holds a [batch, vision_dim]
+    tensor containing the spatially-averaged patch embeddings.
+
+    The CLS token (index 0) is skipped so the average represents spatial
+    content rather than a global summary token.
+    """
+
+    def __init__(self, module: nn.Module):
+        self.features: torch.Tensor | None = None
+        self._handle = module.register_forward_hook(self._hook_fn)
+
+    def _hook_fn(self, module: nn.Module, inputs: Any, output: Any) -> None:
+        # Unwrap various output formats from different VLM families
+        if hasattr(output, "last_hidden_state"):
+            feat = output.last_hidden_state     # BaseModelOutput
+        elif isinstance(output, tuple):
+            feat = output[0]                    # plain tuple
+        else:
+            feat = output                       # raw tensor
+
+        if feat.dim() == 3:
+            # [batch, n_patches, vision_dim]
+            # Skip index 0 (CLS) if present; use spatial patches only
+            spatial = feat[:, 1:] if feat.shape[1] > 1 else feat
+            self.features = spatial.mean(dim=1).detach()   # [batch, vision_dim]
+        else:
+            # Unexpected shape — store as-is and let the appendage handle it
+            self.features = feat.detach()
+
+    def remove(self) -> None:
+        self._handle.remove()
+        self.features = None
 
 
 @dataclass
@@ -83,6 +131,21 @@ class VLAGraft(nn.Module):
         if self.config.hidden_dim is None:
             self.config.hidden_dim = self._detect_hidden_dim()
 
+        # Register vision encoder hook when the appendage requests it
+        self._vision_hook: _VisionHook | None = None
+        if getattr(appendage, "needs_vision_features", False):
+            vision_encoder = self._find_vision_encoder()
+            if vision_encoder is not None:
+                self._vision_hook = _VisionHook(vision_encoder)
+            else:
+                import warnings
+                warnings.warn(
+                    f"{type(appendage).__name__} has needs_vision_features=True but "
+                    "VLAGraft could not locate the vision encoder sub-module. "
+                    "Vision skip connection is disabled; only LLM features will be used.",
+                    stacklevel=2,
+                )
+
     # ------------------------------------------------------------------ #
     #  Forward passes                                                      #
     # ------------------------------------------------------------------ #
@@ -124,7 +187,12 @@ class VLAGraft(nn.Module):
 
         hidden_states = vlm_out.hidden_states[-1]  # [batch, seq, hidden]
         action_features = self._extract_features(hidden_states, attention_mask)
-        action = self.appendage(action_features)
+
+        # Pass vision skip features when the hook has captured them
+        if self._vision_hook is not None and self._vision_hook.features is not None:
+            action = self.appendage(action_features, vision_features=self._vision_hook.features)
+        else:
+            action = self.appendage(action_features)
 
         result: dict[str, torch.Tensor] = {
             "lm_logits": vlm_out.logits,
@@ -274,6 +342,70 @@ class VLAGraft(nn.Module):
             "Cannot auto-detect hidden_dim from model config. "
             "Set GraftConfig(hidden_dim=...) explicitly."
         )
+
+    def _find_vision_encoder(self) -> nn.Module | None:
+        """
+        Try to locate the vision encoder sub-module of the VLM.
+
+        Checks a set of common attribute paths used by popular VLM families.
+        Returns None if no vision encoder is found (graceful fallback).
+        """
+        # Common paths: (attribute chain as dot-separated string)
+        _CANDIDATE_PATHS = [
+            "model.vision_model",           # Idefics3 / SmolVLM
+            "vision_model",                 # PaliGemma, BLIP-2
+            "visual",                       # Qwen-VL
+            "vision_tower",                 # LLaVA
+            "vision_encoder",               # InstructBLIP, CogVLM
+            "model.visual",                 # Qwen2-VL
+            "encoder.vision_model",         # some BLIP variants
+            "model.encoder.visual",
+        ]
+        for path in _CANDIDATE_PATHS:
+            module = self.vlm
+            try:
+                for part in path.split("."):
+                    module = getattr(module, part)
+                if isinstance(module, nn.Module):
+                    return module
+            except AttributeError:
+                continue
+        return None
+
+    @staticmethod
+    def detect_vision_dim(vlm: nn.Module) -> int | None:
+        """
+        Attempt to read the vision encoder's hidden dimension from the model config.
+
+        Useful for deciding the ``vision_dim`` argument to ``TouchscreenAppendage``.
+
+        Returns:
+            The integer dimension, or None if it cannot be determined.
+
+        Example::
+
+            vision_dim = VLAGraft.detect_vision_dim(vlm)
+            head = TouchscreenAppendage(hidden_dim, vision_dim=vision_dim)
+        """
+        try:
+            cfg = vlm.config
+        except AttributeError:
+            return None
+
+        # Try direct vision_config attributes
+        for vcfg_attr in ("vision_config", "vision_encoder_config", "visual_config"):
+            vcfg = getattr(cfg, vcfg_attr, None)
+            if vcfg is not None:
+                for dim_attr in ("hidden_size", "d_model", "embed_dim"):
+                    if hasattr(vcfg, dim_attr):
+                        return int(getattr(vcfg, dim_attr))
+
+        # Some models flatten vision dims directly on the top-level config
+        for attr in ("vision_hidden_size", "mm_hidden_size", "visual_hidden_size"):
+            if hasattr(cfg, attr):
+                return int(getattr(cfg, attr))
+
+        return None
 
     def __repr__(self) -> str:
         n_vlm = sum(p.numel() for p in self.vlm.parameters())

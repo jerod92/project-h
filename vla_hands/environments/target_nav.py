@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .base import BaseEnvironment, EnvStepResult
+from .prompt_vocab import PromptVocab, TARGET_NAV_VOCAB
 
 # Color palette
 _BG = (245, 245, 242)
@@ -76,13 +77,12 @@ class TargetNavEnvironment(BaseEnvironment):
         self._trail: list[tuple[float, float]] = []
         self._prev_dist = 0.0
         self._rng = np.random.default_rng()
+        self._vocab = PromptVocab(TARGET_NAV_VOCAB)
+        self._current_prompt = self._vocab.sample()
 
     @property
     def prompt(self) -> str:
-        return (
-            "You are controlling a red circle. Navigate it to the blue target marked with X. "
-            "Output joystick values to move toward the target."
-        )
+        return self._current_prompt
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -96,6 +96,7 @@ class TargetNavEnvironment(BaseEnvironment):
         self._rng = np.random.default_rng(seed)
         self._step_count = 0
         self._trail.clear()
+        self._current_prompt = self._vocab.sample(seed=seed)
 
         margin = max(self.agent_radius + 4, 20)
         min_sep = max(self.success_radius * 3, 50.0)

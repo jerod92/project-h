@@ -6,14 +6,15 @@ by attaching lightweight action heads ("appendages") to the VLM's hidden states.
 
 Quick start::
 
-    from transformers import AutoProcessor, AutoModelForVision2Seq
+    from transformers import AutoProcessor, AutoModelForImageTextToText
     from vla_hands import VLAGraft, GraftConfig, JoystickAppendage
     from vla_hands import TargetNavEnvironment, TrainingCurriculum, CurriculumConfig
 
     processor = AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct")
-    vlm = AutoModelForVision2Seq.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct")
+    vlm = AutoModelForImageTextToText.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct")
 
-    appendage = JoystickAppendage(hidden_dim=vlm.config.hidden_size)
+    hidden_dim = vlm.config.text_config.hidden_size
+    appendage = JoystickAppendage(hidden_dim=hidden_dim)
     graft = VLAGraft(vlm=vlm, appendage=appendage)
 
     env = TargetNavEnvironment()
@@ -25,6 +26,7 @@ __version__ = "0.1.0"
 
 # Grafting
 from .grafting.graft import GraftConfig, VLAGraft
+from .grafting.lora import LoRAConfig, apply_lora, merge_lora, lora_parameter_count
 from .grafting.freezing import (
     FreezingCurriculum,
     FreezingStage,
@@ -46,6 +48,7 @@ from .appendages.button import (
     MultiButtonAppendage,
     MultiButtonState,
 )
+from .appendages.touchscreen import TouchscreenAppendage, TouchPoint
 
 # Environments
 from .environments.base import BaseEnvironment, EnvStepResult
@@ -54,6 +57,17 @@ from .environments.spaceship import SpaceshipNavEnvironment
 from .environments.grid_world import GridWorldEnvironment
 from .environments.maze import MazeEnvironment
 from .environments.button_task import ButtonPressEnvironment, MCQButtonEnvironment
+from .environments.pointing import PointingEnvironment
+from .environments.prompt_vocab import (
+    PromptVocab,
+    TARGET_NAV_VOCAB,
+    SPACESHIP_VOCAB,
+    GRID_WORLD_VOCAB,
+    MAZE_VOCAB,
+    BUTTON_PRESS_VOCAB,
+    MCQ_VOCAB,
+    POINTING_VOCAB,
+)
 
 # Training
 from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
@@ -79,6 +93,11 @@ __all__ = [
     "STAGE_LAST_2",
     "STAGE_LAST_6",
     "STAGE_FULL",
+    # LoRA
+    "LoRAConfig",
+    "apply_lora",
+    "merge_lora",
+    "lora_parameter_count",
     # Appendages
     "ActionSpec",
     "BaseAppendage",
@@ -91,6 +110,8 @@ __all__ = [
     "ButtonState",
     "MultiButtonAppendage",
     "MultiButtonState",
+    "TouchscreenAppendage",
+    "TouchPoint",
     # Environments
     "BaseEnvironment",
     "EnvStepResult",
@@ -100,6 +121,16 @@ __all__ = [
     "MazeEnvironment",
     "ButtonPressEnvironment",
     "MCQButtonEnvironment",
+    "PointingEnvironment",
+    # Prompt vocab
+    "PromptVocab",
+    "TARGET_NAV_VOCAB",
+    "SPACESHIP_VOCAB",
+    "GRID_WORLD_VOCAB",
+    "MAZE_VOCAB",
+    "BUTTON_PRESS_VOCAB",
+    "MCQ_VOCAB",
+    "POINTING_VOCAB",
     # Training
     "BCTrainer",
     "RLTrainer",

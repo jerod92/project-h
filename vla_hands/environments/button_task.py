@@ -40,6 +40,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .base import BaseEnvironment, EnvStepResult
+from .prompt_vocab import PromptVocab, BUTTON_PRESS_VOCAB, MCQ_VOCAB
 
 # ── Color palette shared between environments ─────────────────────────────────
 
@@ -120,13 +121,12 @@ class ButtonPressEnvironment(BaseEnvironment):
         self._step_count = 0
         self._rng = np.random.default_rng()
         self._last_result: str = ""  # "correct" | "wrong" | ""
+        self._vocab = PromptVocab(BUTTON_PRESS_VOCAB)
+        self._current_prompt = self._vocab.sample(color="red")
 
     @property
     def prompt(self) -> str:
-        return (
-            f"Look at the circle. Is it {self._target_color_name}? "
-            "Press the button to answer YES."
-        )
+        return self._current_prompt
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -159,6 +159,7 @@ class ButtonPressEnvironment(BaseEnvironment):
             else:
                 self._target_color_name = self._circle_color_name
 
+        self._current_prompt = self._vocab.sample(seed=seed, color=self._target_color_name)
         return self._render()
 
     def step(self, action) -> EnvStepResult:
@@ -309,19 +310,12 @@ class MCQButtonEnvironment(BaseEnvironment):
         self._step_count = 0
         self._last_result: str = ""
         self._rng = np.random.default_rng()
+        self._vocab = PromptVocab(MCQ_VOCAB)
+        self._current_prompt = "Answer the multiple choice question. Press A, B, C, or D."
 
     @property
     def prompt(self) -> str:
-        if self._question is None:
-            return "Answer the multiple choice question. Press A, B, C, or D."
-        return (
-            f"{self._question.text} "
-            f"Press the button for your answer: "
-            f"A={self._question.choices[0]}, "
-            f"B={self._question.choices[1]}, "
-            f"C={self._question.choices[2]}, "
-            f"D={self._question.choices[3]}."
-        )
+        return self._current_prompt
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -350,6 +344,15 @@ class MCQButtonEnvironment(BaseEnvironment):
             color_names = ["red", "green", "blue", "yellow"]
             self._circle_colors = color_names.copy()
 
+        q = self._question
+        self._current_prompt = self._vocab.sample(
+            seed=seed,
+            question=q.text,
+            a=q.choices[0],
+            b=q.choices[1],
+            c=q.choices[2],
+            d=q.choices[3],
+        )
         return self._render()
 
     def step(self, action) -> EnvStepResult:

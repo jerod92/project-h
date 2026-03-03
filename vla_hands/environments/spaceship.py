@@ -27,6 +27,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .base import BaseEnvironment, EnvStepResult
+from .prompt_vocab import PromptVocab, SPACESHIP_VOCAB
 
 _BG_COLOR = (8, 10, 28)
 _TRAIL_COLOR = (60, 90, 160)
@@ -104,14 +105,12 @@ class SpaceshipNavEnvironment(BaseEnvironment):
         self._bg_star_positions: list[tuple[float, float]] = []
         self._prev_dist = 0.0
         self._rng = np.random.default_rng()
+        self._vocab = PromptVocab(SPACESHIP_VOCAB)
+        self._current_prompt = self._vocab.sample()
 
     @property
     def prompt(self) -> str:
-        return (
-            "You are piloting a spaceship (white triangle). "
-            "Navigate to the gold star using joystick thrust. "
-            "Account for your momentum — decelerate before reaching the target."
-        )
+        return self._current_prompt
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -126,6 +125,7 @@ class SpaceshipNavEnvironment(BaseEnvironment):
         self._step_count = 0
         self._trail.clear()
         self._vel[:] = 0.0
+        self._current_prompt = self._vocab.sample(seed=seed)
 
         margin = 30
         min_sep = 80.0

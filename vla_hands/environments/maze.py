@@ -31,6 +31,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .base import BaseEnvironment, EnvStepResult
+from .prompt_vocab import PromptVocab, MAZE_VOCAB
 
 # Cell states
 _WALL = 0
@@ -88,13 +89,12 @@ class MazeEnvironment(BaseEnvironment):
         # Pixel dimensions
         self._pw = cols * (cell_px + wall_px) + wall_px
         self._ph = rows * (cell_px + wall_px) + wall_px
+        self._vocab = PromptVocab(MAZE_VOCAB)
+        self._current_prompt = self._vocab.sample()
 
     @property
     def prompt(self) -> str:
-        return (
-            "Navigate the blue agent through the maze to the green exit. "
-            "Find a path through the corridors — you may need to backtrack."
-        )
+        return self._current_prompt
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -113,6 +113,7 @@ class MazeEnvironment(BaseEnvironment):
         self._step_count = 0
         self._agent = (0, 0)
         self._visited = {(0, 0)}
+        self._current_prompt = self._vocab.sample(seed=seed)
         self._generate_maze()
         return self._render()
 
@@ -286,6 +287,7 @@ class MazeEnvironment(BaseEnvironment):
                     draw.rectangle([x0, y1 + 1, dx1, dy0 - 1], fill=_COLOR_FLOOR)
 
         # Start cell marker (dim)
+        cp = self.cell_px
         sx0, sy0, sx1, sy1 = self._cell_rect(0, 0)
         pad = cp // 4
         draw.ellipse(

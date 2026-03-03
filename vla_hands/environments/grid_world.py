@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .base import BaseEnvironment, EnvStepResult
+from .prompt_vocab import PromptVocab, GRID_WORLD_VOCAB
 
 # Cell types
 _EMPTY = 0
@@ -69,13 +70,12 @@ class GridWorldEnvironment(BaseEnvironment):
         self._goal: tuple[int, int] = (grid_size - 1, grid_size - 1)
         self._step_count = 0
         self._rng = np.random.default_rng()
+        self._vocab = PromptVocab(GRID_WORLD_VOCAB)
+        self._current_prompt = self._vocab.sample()
 
     @property
     def prompt(self) -> str:
-        return (
-            "Navigate the red agent to the green goal on the grid. "
-            "Dark cells are walls — avoid them. Use directional buttons to move."
-        )
+        return self._current_prompt
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -93,6 +93,7 @@ class GridWorldEnvironment(BaseEnvironment):
     def reset(self, seed: int | None = None) -> Image.Image:
         self._rng = np.random.default_rng(seed)
         self._step_count = 0
+        self._current_prompt = self._vocab.sample(seed=seed)
         self._generate_map()
         return self._render()
 

@@ -34,8 +34,10 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 
+from ..appendages.button import ButtonAppendage, MultiButtonAppendage
 from ..appendages.dpad import DPadAppendage
 from ..appendages.joystick import JoystickAppendage
+from ..appendages.touchscreen import TouchscreenAppendage
 from ..environments.base import BaseEnvironment
 from ..grafting.freezing import DEFAULT_CURRICULUM, FreezingCurriculum, FreezingStage
 from ..grafting.graft import VLAGraft
@@ -127,7 +129,7 @@ def _to_action_tensor(
     device: torch.device,
 ) -> torch.Tensor:
     """Convert a list of expert actions to a target tensor matching the appendage type."""
-    if isinstance(appendage, JoystickAppendage):
+    if isinstance(appendage, (JoystickAppendage, TouchscreenAppendage)):
         targets = []
         for a in expert_actions:
             if hasattr(a, "x"):
@@ -147,6 +149,19 @@ def _to_action_tensor(
                 targets.append(int(a))
         return torch.tensor(targets, dtype=torch.long, device=device)
 
+    elif isinstance(appendage, ButtonAppendage):
+        targets = [float(a) for a in expert_actions]
+        return torch.tensor(targets, dtype=torch.float32, device=device).unsqueeze(-1)
+
+    elif isinstance(appendage, MultiButtonAppendage):
+        targets = []
+        for a in expert_actions:
+            if isinstance(a, (list, tuple)):
+                targets.append([float(v) for v in a])
+            else:
+                targets.append(list(a))
+        return torch.tensor(targets, dtype=torch.float32, device=device)
+
     else:
         raise NotImplementedError(f"Unknown appendage type: {type(appendage).__name__}")
 
@@ -162,7 +177,13 @@ def _select_action(appendage: nn.Module, action_out: torch.Tensor, explore: bool
         if explore:
             return int(appendage.sample(action_out, temperature=1.0).item())
         return int(appendage.argmax(action_out).item())
+    elif isinstance(appendage, ButtonAppendage):
+        val = float(action_out.squeeze().item())
+        return val
+    elif isinstance(appendage, MultiButtonAppendage):
+        return action_out.squeeze(0).detach().cpu().tolist()
     else:
+        # JoystickAppendage, TouchscreenAppendage, and any future continuous heads
         raw = action_out.squeeze(0).detach().cpu().tolist()
         return raw
 

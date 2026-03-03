@@ -11,6 +11,7 @@ from .freezing import (
     FreezingStage,
 )
 from .graft import GraftConfig, VLAGraft
+from .lora import LoRAConfig, apply_lora, lora_parameter_count, merge_lora
 
 __all__ = [
     "GraftConfig",
@@ -23,4 +24,9 @@ __all__ = [
     "STAGE_LAST_2",
     "STAGE_LAST_6",
     "STAGE_FULL",
+    # LoRA
+    "LoRAConfig",
+    "apply_lora",
+    "merge_lora",
+    "lora_parameter_count",
 ]
