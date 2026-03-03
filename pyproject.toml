@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vla-hands"
+version = "0.1.0"
+description = "Give VLMs action capabilities by grafting appendage heads — turning VLMs into VLAs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["vla", "vlm", "robotics", "reinforcement-learning", "action-space", "multimodal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.40.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov",
+    "black",
+    "isort",
+    "mypy",
+]
+train = [
+    "wandb>=0.16.0",
+    "tensorboard>=2.14.0",
+    "accelerate>=0.25.0",
+]
+all = ["vla-hands[dev,train]"]
+
+[project.scripts]
+vla-train-joystick = "scripts.train_joystick:main"
+vla-train-dpad = "scripts.train_dpad:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vla_hands*", "scripts*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
