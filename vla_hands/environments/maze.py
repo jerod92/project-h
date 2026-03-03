@@ -263,35 +263,27 @@ class MazeEnvironment(BaseEnvironment):
         img = Image.new("RGB", (self._pw, self._ph), _COLOR_BG)
         draw = ImageDraw.Draw(img)
 
-        wp = self.wall_px
-        cp = self.cell_px
+        # Draw cell floors and passages by iterating over cells directly.
+        # This avoids the coordinate confusion of the internal-grid approach:
+        #   Cell (r, c) is at internal grid position (2r+1, 2c+1).
+        #   Passage right to (r, c+1) is at internal (2r+1, 2c+2).
+        #   Passage down to (r+1, c) is at internal (2r+2, 2c+1).
+        for r in range(self.rows):
+            for c in range(self.cols):
+                x0, y0, x1, y1 = self._cell_rect(r, c)
 
-        # Draw cells and passages
-        for ir in range(2 * self.rows + 1):
-            for ic in range(2 * self.cols + 1):
-                if self._grid[ir, ic] == _OPEN:
-                    # Map internal grid coordinates to pixels
-                    x0 = ic * (cp + wp) // 2
-                    y0 = ir * (cp + wp) // 2
-                    # Width/height depends on whether it's a cell or a passage
-                    if ir % 2 == 1 and ic % 2 == 1:
-                        # Cell interior
-                        cx, cy, cx2, cy2 = self._cell_rect(ir // 2, ic // 2)
-                        draw.rectangle([cx, cy, cx2, cy2], fill=_COLOR_FLOOR)
-                    elif ir % 2 == 1:
-                        # Horizontal passage (between columns)
-                        cell_r = ir // 2
-                        cell_c = ic // 2
-                        x0_, y0_, x1_, y1_ = self._cell_rect(cell_r, cell_c)
-                        x0_r, y0_r, x1_r, y1_r = self._cell_rect(cell_r, cell_c + 1)
-                        draw.rectangle([x1_ + 1, y0_, x0_r - 1, y1_], fill=_COLOR_FLOOR)
-                    elif ic % 2 == 1:
-                        # Vertical passage (between rows)
-                        cell_r = ir // 2
-                        cell_c = ic // 2
-                        x0_, y0_, x1_, y1_ = self._cell_rect(cell_r, cell_c)
-                        x0_b, y0_b, x1_b, y1_b = self._cell_rect(cell_r + 1, cell_c)
-                        draw.rectangle([x0_, y1_ + 1, x1_, y0_b - 1], fill=_COLOR_FLOOR)
+                # Cell floor
+                draw.rectangle([x0, y0, x1, y1], fill=_COLOR_FLOOR)
+
+                # Passage to the right (horizontal corridor)
+                if c + 1 < self.cols and self._grid[2 * r + 1, 2 * c + 2] == _OPEN:
+                    rx0, ry0, rx1, ry1 = self._cell_rect(r, c + 1)
+                    draw.rectangle([x1 + 1, y0, rx0 - 1, ry1], fill=_COLOR_FLOOR)
+
+                # Passage downward (vertical corridor)
+                if r + 1 < self.rows and self._grid[2 * r + 2, 2 * c + 1] == _OPEN:
+                    dx0, dy0, dx1, dy1 = self._cell_rect(r + 1, c)
+                    draw.rectangle([x0, y1 + 1, dx1, dy0 - 1], fill=_COLOR_FLOOR)
 
         # Start cell marker (dim)
         sx0, sy0, sx1, sy1 = self._cell_rect(0, 0)

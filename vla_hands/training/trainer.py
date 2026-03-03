@@ -81,17 +81,43 @@ class TrainerConfig:
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
 def _preprocess(processor, image, prompt, device: torch.device) -> dict[str, torch.Tensor]:
-    """Convert a PIL Image + prompt to model-ready tensors."""
-    try:
+    """
+    Convert a PIL Image + prompt to model-ready tensors.
+
+    Handles two processor families:
+      - Chat-template processors (SmolVLM / Idefics3, LLaVA-Next, etc.):
+        require the text to embed image tokens via apply_chat_template().
+      - Legacy processors (BLIP, older LLaVA): accept plain text + image.
+    """
+    if hasattr(processor, "apply_chat_template"):
+        # Chat-template path: image token injected automatically
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        text = processor.apply_chat_template(messages, add_generation_prompt=True)
         inputs = processor(
-            images=image,
-            text=prompt,
+            images=[image],
+            text=[text],
             return_tensors="pt",
             padding=True,
         )
-    except TypeError:
-        # Older processor signatures
-        inputs = processor(image, prompt, return_tensors="pt")
+    else:
+        # Legacy path
+        try:
+            inputs = processor(
+                images=image,
+                text=prompt,
+                return_tensors="pt",
+                padding=True,
+            )
+        except TypeError:
+            inputs = processor(image, prompt, return_tensors="pt")
     return {k: v.to(device) for k, v in inputs.items()}
 
 
