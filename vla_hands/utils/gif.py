@@ -123,12 +123,12 @@ def _run_rollout(graft, processor, env, n_steps: int, seed, device) -> list:
             raw = out["action"]
             action_val = _select_action(graft.appendage, raw)
         else:
-            # CompositeGraft: use the first appendage's output
-            first_key = next(iter(out))
-            raw = out[first_key]
-            action_val = _select_action(
-                graft.appendages[first_key], raw  # type: ignore[union-attr]
-            )
+            # CompositeGraft: build full action dict for multi-appendage envs
+            action_val = {
+                name: _select_action(app, out[name])
+                for name, app in graft.appendages.items()  # type: ignore[union-attr]
+                if name in out
+            }
 
         result = env.step(action_val)
         frames.append(result.observation)

@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--model", default="HuggingFaceTB/SmolVLM-256M-Instruct")
     p.add_argument("--budget", type=int, default=1000, help="Total training steps (BC + RL).")
+    p.add_argument("--rl-max-steps", type=int, default=30, help="Max steps per RL episode.")
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     p.add_argument("--save-dir", default=None, help="Checkpoint directory (auto-named if omitted).")
     p.add_argument("--seed", type=int, default=42)
@@ -92,6 +93,7 @@ def main() -> int:
         processor=processor,
         appendage_names=args.appendages,
         budget_steps=args.budget,
+        rl_max_steps_per_episode=args.rl_max_steps,
         device=device,
         save_dir=save_dir,
     )

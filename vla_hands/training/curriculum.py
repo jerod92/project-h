@@ -32,6 +32,7 @@ class CurriculumConfig:
 
     # RL phase (set to 0 to skip)
     rl_steps: int = 500
+    rl_max_steps_per_episode: int = 30  # cap per-episode rollout length during RL
     rl_episodes_per_update: int = 4
 
     # Shared
@@ -64,7 +65,8 @@ class CurriculumConfig:
             bc_steps=self.bc_steps,
             batch_size=self.bc_batch_size,
             rl_steps=self.rl_steps,
-            episodes_per_update=self.rl_episodes_per_update,
+            rl_max_steps_per_episode=self.rl_max_steps_per_episode,
+            rl_episodes_per_update=self.rl_episodes_per_update,
             log_every=self.log_every,
             eval_every=self.eval_every,
             eval_episodes=self.eval_episodes,

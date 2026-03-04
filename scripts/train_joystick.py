@@ -42,7 +42,8 @@ def parse_args() -> argparse.Namespace:
         help="HuggingFace model ID for the base VLM.",
     )
     p.add_argument("--bc-steps", type=int, default=500, help="Behavioral cloning steps.")
-    p.add_argument("--rl-steps", type=int, default=200, help="RL fine-tuning steps (0 to skip).")
+    p.add_argument("--rl-steps", type=int, default=200, help="RL fine-tuning steps (0 to skip). Each step = rl_episodes_per_update full episodes.")
+    p.add_argument("--rl-max-steps", type=int, default=30, help="Max steps per RL episode (shorter = faster).")
     p.add_argument(
         "--device",
         default="auto",
@@ -121,6 +122,7 @@ def main() -> int:
     config = CurriculumConfig(
         bc_steps=args.bc_steps,
         rl_steps=args.rl_steps,
+        rl_max_steps_per_episode=args.rl_max_steps,
         save_dir=args.save_dir,
         device=device,
         freezing_stages=stages,

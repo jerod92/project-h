@@ -62,10 +62,11 @@ class TrainerConfig:
 
     # ── RL ───────────────────────────────────────────────────────────────
     rl_steps: int = 500
+    rl_max_steps_per_episode: int = 30  # cap per-episode length during RL (avoids very long rollouts)
     rl_gamma: float = 0.99
     rl_entropy_coef: float = 0.02   # Entropy bonus for discrete actions
     rl_explore_noise: float = 0.10  # Gaussian noise scale for continuous actions
-    episodes_per_update: int = 4    # Episodes to collect before one RL update
+    rl_episodes_per_update: int = 4  # Episodes to collect before one RL update
 
     # ── Logging & checkpointing ──────────────────────────────────────────
     log_every: int = 50
@@ -435,7 +436,7 @@ class RLTrainer:
         obs = self.env.reset()
         log_probs: list[torch.Tensor] = []
         rewards: list[float] = []
-        max_steps = self.env.max_steps
+        max_steps = min(self.env.max_steps, self.config.rl_max_steps_per_episode)
 
         self.graft.train()
 
@@ -513,7 +514,7 @@ class RLTrainer:
             acc_returns.extend(returns)
             n_episodes += 1
 
-            if n_episodes % self.config.episodes_per_update == 0:
+            if n_episodes % self.config.rl_episodes_per_update == 0:
                 optimizer.zero_grad()
 
                 lp = torch.stack(acc_log_probs)

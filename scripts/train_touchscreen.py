@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model", default="HuggingFaceTB/SmolVLM-256M-Instruct")
     p.add_argument("--bc-steps", type=int, default=500)
     p.add_argument("--rl-steps", type=int, default=0, help="0 = BC only (recommended for pointing)")
+    p.add_argument("--rl-max-steps", type=int, default=30, help="Max steps per RL episode.")
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     p.add_argument("--save-dir", default="model_checkpoints/touchscreen")
     p.add_argument("--env-size", type=int, default=256)
@@ -124,6 +125,7 @@ def main() -> int:
     config = CurriculumConfig(
         bc_steps=args.bc_steps,
         rl_steps=args.rl_steps,
+        rl_max_steps_per_episode=args.rl_max_steps,
         save_dir=args.save_dir,
         device=device,
         freezing_stages=stages,

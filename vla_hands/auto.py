@@ -282,6 +282,7 @@ def auto_curriculum(
     env_kwargs: dict | None = None,
     appendage_kwargs: dict | None = None,
     bc_fraction: float = 0.8,
+    rl_max_steps_per_episode: int = 30,
     save_dir: str = "model_checkpoints/auto",
     verbose: bool = True,
 ) -> dict:
@@ -358,7 +359,8 @@ def auto_curriculum(
 
     if isinstance(graft, VLAGraft):
         _run_single_graft(graft, processor, env, bc_steps, rl_steps,
-                          device, save_dir, results)
+                          device, save_dir, results,
+                          rl_max_steps_per_episode=rl_max_steps_per_episode)
     else:
         _run_composite_graft(graft, processor, env, bc_steps, rl_steps,
                              device, save_dir, results)
@@ -367,7 +369,8 @@ def auto_curriculum(
 
 
 def _run_single_graft(graft, processor, env, bc_steps, rl_steps,
-                      device, save_dir, results):
+                      device, save_dir, results,
+                      rl_max_steps_per_episode: int = 30):
     """BC + RL training for a single-appendage VLAGraft."""
     from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
     from .grafting.freezing import QUICK_CURRICULUM
@@ -375,6 +378,7 @@ def _run_single_graft(graft, processor, env, bc_steps, rl_steps,
     cfg = TrainerConfig(
         bc_steps=bc_steps,
         rl_steps=rl_steps,
+        rl_max_steps_per_episode=rl_max_steps_per_episode,
         save_dir=save_dir,
         freezing_stages=QUICK_CURRICULUM,
     )
