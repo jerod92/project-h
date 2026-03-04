@@ -283,6 +283,10 @@ def auto_curriculum(
     appendage_kwargs: dict | None = None,
     bc_fraction: float = 0.8,
     rl_max_steps_per_episode: int = 30,
+    rl_ppo_clip: float = 0.2,
+    rl_ppo_epochs: int = 4,
+    rl_gae_lambda: float = 0.95,
+    rl_action_std: float = 0.3,
     save_dir: str = "model_checkpoints/auto",
     verbose: bool = True,
 ) -> dict:
@@ -360,7 +364,11 @@ def auto_curriculum(
     if isinstance(graft, VLAGraft):
         _run_single_graft(graft, processor, env, bc_steps, rl_steps,
                           device, save_dir, results,
-                          rl_max_steps_per_episode=rl_max_steps_per_episode)
+                          rl_max_steps_per_episode=rl_max_steps_per_episode,
+                          rl_ppo_clip=rl_ppo_clip,
+                          rl_ppo_epochs=rl_ppo_epochs,
+                          rl_gae_lambda=rl_gae_lambda,
+                          rl_action_std=rl_action_std)
     else:
         _run_composite_graft(graft, processor, env, bc_steps, rl_steps,
                              device, save_dir, results)
@@ -370,7 +378,11 @@ def auto_curriculum(
 
 def _run_single_graft(graft, processor, env, bc_steps, rl_steps,
                       device, save_dir, results,
-                      rl_max_steps_per_episode: int = 30):
+                      rl_max_steps_per_episode: int = 30,
+                      rl_ppo_clip: float = 0.2,
+                      rl_ppo_epochs: int = 4,
+                      rl_gae_lambda: float = 0.95,
+                      rl_action_std: float = 0.3):
     """BC + RL training for a single-appendage VLAGraft."""
     from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
     from .grafting.freezing import QUICK_CURRICULUM
@@ -379,6 +391,10 @@ def _run_single_graft(graft, processor, env, bc_steps, rl_steps,
         bc_steps=bc_steps,
         rl_steps=rl_steps,
         rl_max_steps_per_episode=rl_max_steps_per_episode,
+        rl_ppo_clip=rl_ppo_clip,
+        rl_ppo_epochs=rl_ppo_epochs,
+        rl_gae_lambda=rl_gae_lambda,
+        rl_action_std=rl_action_std,
         save_dir=save_dir,
         freezing_stages=QUICK_CURRICULUM,
     )
@@ -388,7 +404,12 @@ def _run_single_graft(graft, processor, env, bc_steps, rl_steps,
 
     if rl_steps > 0:
         rl = RLTrainer(graft, processor, env, config=cfg, device=device)
-        results["rl"] = rl.train()
+        import torch.optim as _optim
+        rl_opt = _optim.Adam(
+            list(graft.appendage.parameters()) + list(rl._value_head.parameters()),
+            lr=cfg.appendage_lr * 0.1,
+        )
+        results["rl"] = rl.train(optimizer=rl_opt)
 
 
 def _run_composite_graft(graft, processor, env, bc_steps, rl_steps,

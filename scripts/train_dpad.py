@@ -43,6 +43,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bc-steps", type=int, default=500, help="Behavioral cloning steps.")
     p.add_argument("--rl-steps", type=int, default=200, help="RL fine-tuning steps (0 to skip). Each step = rl_episodes_per_update full episodes.")
     p.add_argument("--rl-max-steps", type=int, default=30, help="Max steps per RL episode (shorter = faster).")
+    p.add_argument("--ppo-clip", type=float, default=0.2, help="PPO clip ratio ε.")
+    p.add_argument("--ppo-epochs", type=int, default=4, help="PPO gradient epochs per rollout batch.")
+    p.add_argument("--gae-lambda", type=float, default=0.95, help="GAE smoothing parameter λ.")
+    p.add_argument("--action-std", type=float, default=0.3, help="Std for continuous action distributions.")
     p.add_argument(
         "--device",
         default="auto",
@@ -125,6 +129,10 @@ def main() -> int:
         bc_steps=args.bc_steps,
         rl_steps=args.rl_steps,
         rl_max_steps_per_episode=args.rl_max_steps,
+        rl_ppo_clip=args.ppo_clip,
+        rl_ppo_epochs=args.ppo_epochs,
+        rl_gae_lambda=args.gae_lambda,
+        rl_action_std=args.action_std,
         save_dir=args.save_dir,
         device=device,
         freezing_stages=stages,

@@ -31,7 +31,9 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+from torch.distributions import Categorical, Normal
 from tqdm import tqdm
 
 from ..appendages.button import ButtonAppendage, MultiButtonAppendage
@@ -60,13 +62,17 @@ class TrainerConfig:
     # Random env steps taken before sampling an expert state (diversifies BC data)
     bc_warmup_steps_range: tuple[int, int] = (0, 8)
 
-    # ── RL ───────────────────────────────────────────────────────────────
+    # ── RL (PPO) ─────────────────────────────────────────────────────────
     rl_steps: int = 500
-    rl_max_steps_per_episode: int = 30  # cap per-episode length during RL (avoids very long rollouts)
-    rl_gamma: float = 0.99
-    rl_entropy_coef: float = 0.02   # Entropy bonus for discrete actions
-    rl_explore_noise: float = 0.10  # Gaussian noise scale for continuous actions
-    rl_episodes_per_update: int = 4  # Episodes to collect before one RL update
+    rl_max_steps_per_episode: int = 30  # cap per-episode rollout length
+    rl_gamma: float = 0.99              # discount factor
+    rl_gae_lambda: float = 0.95         # GAE smoothing parameter (λ)
+    rl_ppo_clip: float = 0.2            # PPO surrogate clip ratio (ε)
+    rl_ppo_epochs: int = 4              # gradient epochs per rollout batch
+    rl_entropy_coef: float = 0.02       # entropy bonus (all action types)
+    rl_value_coef: float = 0.5          # value function loss weight
+    rl_action_std: float = 0.3          # std for continuous action distributions
+    rl_episodes_per_update: int = 4     # episodes per rollout batch
 
     # ── Logging & checkpointing ──────────────────────────────────────────
     log_every: int = 50
@@ -399,15 +405,34 @@ class BCTrainer:
 
 # ── RLTrainer ─────────────────────────────────────────────────────────────────
 
+@dataclass
+class _RolloutStep:
+    """One environment transition collected during a PPO rollout."""
+    features: torch.Tensor   # VLM action_features, cached + detached, shape [hidden_dim]
+    u: torch.Tensor          # pre-squash sample (continuous) or sampled idx (discrete)
+    log_prob: torch.Tensor   # log π_old(a|s), scalar
+    entropy: torch.Tensor    # H[π(·|s)], scalar
+    value: torch.Tensor      # V̂(s) from value head, scalar
+    squash: str              # "tanh" | "sigmoid" | "categorical"
+
+
 class RLTrainer:
     """
-    REINFORCE policy gradient trainer.
+    PPO (Proximal Policy Optimization) trainer for VLA action heads.
 
-    Runs complete episodes, collects (log_prob, reward) sequences, computes
-    discounted returns, and updates the policy with the policy gradient theorem.
+    Key improvements over vanilla REINFORCE:
+    - Clipped surrogate objective prevents large destructive policy updates.
+    - Learned value head (tiny 2-layer MLP on cached VLM features) provides a
+      proper baseline, reducing gradient variance dramatically.
+    - GAE(λ) advantage estimation smoothly blends bias and variance trade-offs.
+    - Multiple PPO epochs per rollout batch amortise expensive VLM forward passes
+      (only the small action head is re-run in epochs 2+).
+    - Proper squashing-corrected log-probs for all action types:
+        - DPad         → Categorical distribution
+        - Joystick     → Normal in pre-tanh space (SAC-style)
+        - Touchscreen / Button / MultiButton → Normal in pre-sigmoid (logit) space
 
-    Best used AFTER BCTrainer has warm-started the action head, so the initial
-    policy is already reasonable (important for REINFORCE's high variance).
+    Best used AFTER BCTrainer has warm-started the action head.
     """
 
     def __init__(
@@ -427,63 +452,236 @@ class RLTrainer:
         self._metrics: list[dict] = []
         self.graft.to(self.device)
 
+        # Small value head — re-uses cached VLM features, so it's cheap.
+        hidden_dim = self.graft.config.hidden_dim
+        self._value_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 1),
+        ).to(self.device)
+
+    # ------------------------------------------------------------------ #
+    #  Squashing helpers                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _squash_type(self) -> str:
+        """Determine the action squashing used by the current appendage."""
+        app = self.graft.appendage
+        if isinstance(app, DPadAppendage):
+            return "categorical"
+        elif isinstance(app, JoystickAppendage):
+            return "tanh"   # JoystickAppendage ends with nn.Tanh → output in [-1, 1]
+        else:
+            return "sigmoid"  # Button / MultiButton / Touchscreen → sigmoid → [0, 1]
+
+    @staticmethod
+    def _log_prob_and_entropy(
+        action_out: torch.Tensor,
+        sigma: float,
+        squash: str,
+        u_sample: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute log-prob, entropy, and pre-squash sample for the policy distribution.
+
+        Args:
+            action_out: network output [batch, *] (already squashed for continuous).
+            sigma:      std for continuous Normal distribution.
+            squash:     one of "categorical", "tanh", "sigmoid".
+            u_sample:   if provided, evaluate log-prob at this pre-squash value
+                        instead of drawing a fresh sample (used in PPO re-evaluation).
+
+        Returns:
+            (u, log_prob, entropy) — all scalars / [batch] tensors.
+        """
+        if squash == "categorical":
+            dist = Categorical(logits=action_out.squeeze(0))
+            u = dist.sample() if u_sample is None else u_sample
+            return u, dist.log_prob(u), dist.entropy()
+
+        if squash == "tanh":
+            # action_out ∈ [-1, 1]; invert tanh to get unbounded mean
+            u_mean = torch.atanh(action_out.clamp(-1 + 1e-6, 1 - 1e-6))
+            dist = Normal(u_mean, torch.full_like(u_mean, sigma))
+            u = dist.rsample() if u_sample is None else u_sample
+            action = torch.tanh(u)
+            # Jacobian correction for tanh squashing (SAC-style)
+            lp = dist.log_prob(u).sum(-1) - torch.log(1 - action.pow(2) + 1e-6).sum(-1)
+            ent = dist.entropy().sum(-1)
+        else:  # sigmoid
+            # action_out ∈ [0, 1]; invert sigmoid (logit) to get unbounded mean
+            u_mean = torch.logit(action_out.clamp(1e-6, 1 - 1e-6))
+            dist = Normal(u_mean, torch.full_like(u_mean, sigma))
+            u = dist.rsample() if u_sample is None else u_sample
+            action = torch.sigmoid(u)
+            # Jacobian correction for sigmoid squashing
+            lp = dist.log_prob(u).sum(-1) - torch.log(action * (1 - action) + 1e-6).sum(-1)
+            ent = dist.entropy().sum(-1)
+
+        return u, lp.squeeze(), ent.squeeze()
+
     # ------------------------------------------------------------------ #
     #  Episode rollout                                                     #
     # ------------------------------------------------------------------ #
 
-    def _run_episode(self) -> tuple[list[torch.Tensor], list[float], dict]:
-        """Collect one episode, returning (log_probs, rewards, final_info)."""
+    def _run_episode(self) -> tuple[list[_RolloutStep], list[float], dict]:
+        """
+        Collect one episode.
+
+        Returns:
+            steps:   list of _RolloutStep (one per env step taken)
+            rewards: per-step rewards
+            info:    final env info dict
+        """
         obs = self.env.reset()
-        log_probs: list[torch.Tensor] = []
+        steps: list[_RolloutStep] = []
         rewards: list[float] = []
         max_steps = min(self.env.max_steps, self.config.rl_max_steps_per_episode)
+        squash = self._squash_type()
+        sigma = self.config.rl_action_std
 
         self.graft.train()
+        self._value_head.train()
 
         for _ in range(max_steps):
             inputs = _preprocess(self.processor, obs, self.env.prompt, self.device)
             out = self.graft(**inputs)
             action_out = out["action"]
+            # Cache features detached from the VLM graph — reused for PPO epochs
+            features = out["action_features"].squeeze(0).detach()  # [hidden_dim]
+            value = self._value_head(features.unsqueeze(0)).squeeze()  # scalar
 
-            if isinstance(self.graft.appendage, DPadAppendage):
-                probs = torch.softmax(action_out, dim=-1)
-                dist = torch.distributions.Categorical(probs)
-                idx = dist.sample()
-                log_probs.append(dist.log_prob(idx))
-                action_val = int(idx.item())
+            u, log_prob, entropy = self._log_prob_and_entropy(action_out, sigma, squash)
 
+            # Convert sample to concrete environment action
+            if squash == "categorical":
+                action_val = int(u.item())
+            elif squash == "tanh":
+                action_val = torch.tanh(u).squeeze(0).detach().cpu().tolist()
+                u = u.squeeze(0).detach()  # [D]
             else:
-                # Continuous: Gaussian exploration
-                sigma = self.config.rl_explore_noise
-                noise = torch.randn_like(action_out) * sigma
-                noisy = (action_out + noise).clamp(-1.0, 1.0)
-                # Log prob of the noise under N(0, sigma)
-                log_prob = (
-                    -0.5 * ((noise / sigma) ** 2).sum(-1)
-                    - noise.shape[-1] * 0.5 * torch.log(torch.tensor(2 * 3.14159265))
-                )
-                log_probs.append(log_prob.squeeze())
-                action_val = noisy.squeeze(0).detach().cpu().tolist()
+                action_val = torch.sigmoid(u).squeeze(0).detach().cpu().tolist()
+                u = u.squeeze(0).detach()  # [D]
+
+            steps.append(_RolloutStep(
+                features=features,
+                u=u.detach() if isinstance(u, torch.Tensor) else u,
+                log_prob=log_prob,
+                entropy=entropy,
+                value=value,
+                squash=squash,
+            ))
 
             result = self.env.step(action_val)
             rewards.append(result.reward)
             obs = result.observation
             if result.done:
-                return log_probs, rewards, result.info
+                return steps, rewards, result.info
 
-        return log_probs, rewards, {}
+        return steps, rewards, {}
 
-    def _compute_returns(self, rewards: list[float]) -> torch.Tensor:
-        """Discounted return G_t = Σ_{k≥0} γ^k r_{t+k}, normalized."""
-        returns = []
-        G = 0.0
-        for r in reversed(rewards):
-            G = r + self.config.rl_gamma * G
-            returns.insert(0, G)
-        ret = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        if ret.std() > 1e-6:
-            ret = (ret - ret.mean()) / (ret.std() + 1e-8)
-        return ret
+    # ------------------------------------------------------------------ #
+    #  GAE advantage estimation                                            #
+    # ------------------------------------------------------------------ #
+
+    def _compute_gae(
+        self, rewards: list[float], values: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generalised Advantage Estimation (GAE-λ).
+
+        A_t = δ_t + (γλ) δ_{t+1} + (γλ)² δ_{t+2} + …
+        where δ_t = r_t + γ V(s_{t+1}) − V(s_t).
+
+        Returns:
+            advantages: [T] (un-normalised; caller normalises across the batch)
+            returns:    [T] discounted return targets for the value head
+        """
+        T = len(rewards)
+        vals = torch.stack(values).detach()   # [T]
+        adv = torch.zeros(T, device=self.device)
+        last_gae = 0.0
+
+        for t in reversed(range(T)):
+            next_val = vals[t + 1].item() if t + 1 < T else 0.0
+            delta = rewards[t] + self.config.rl_gamma * next_val - vals[t].item()
+            last_gae = delta + self.config.rl_gamma * self.config.rl_gae_lambda * last_gae
+            adv[t] = last_gae
+
+        returns = adv + vals   # V + A = discounted return (value target)
+        return adv, returns
+
+    # ------------------------------------------------------------------ #
+    #  PPO update                                                          #
+    # ------------------------------------------------------------------ #
+
+    def _ppo_update(
+        self,
+        all_steps: list[_RolloutStep],
+        all_adv: torch.Tensor,   # [T], batch-normalised
+        all_ret: torch.Tensor,   # [T], value targets
+        optimizer: optim.Optimizer,
+    ) -> dict:
+        """
+        K epochs of PPO mini-batch updates.
+
+        Only re-runs the small action head + value head using cached VLM features —
+        no expensive VLM forward passes in epochs 2+.
+        """
+        squash = all_steps[0].squash
+        sigma = self.config.rl_action_std
+
+        features = torch.stack([s.features for s in all_steps])   # [T, hidden_dim]
+        old_lp = torch.stack([s.log_prob for s in all_steps]).detach()  # [T]
+        old_u = torch.stack([s.u for s in all_steps])             # [T] or [T, D]
+        clip_eps = self.config.rl_ppo_clip
+
+        total_pg = total_vf = total_ent = 0.0
+
+        for _ in range(self.config.rl_ppo_epochs):
+            # Re-evaluate action head on cached features (cheap — no VLM)
+            new_action_out = self.graft.appendage(features)       # [T, *]
+            new_values = self._value_head(features).squeeze(-1)   # [T]
+
+            _, new_lp, entropy = self._log_prob_and_entropy(
+                new_action_out, sigma, squash, u_sample=old_u
+            )
+
+            # PPO clipped surrogate objective
+            ratio = torch.exp(new_lp - old_lp)
+            pg_loss = torch.max(
+                -ratio * all_adv,
+                -ratio.clamp(1 - clip_eps, 1 + clip_eps) * all_adv,
+            ).mean()
+
+            # Value function loss (MSE to GAE-estimated returns)
+            vf_loss = F.mse_loss(new_values, all_ret)
+
+            loss = (
+                pg_loss
+                + self.config.rl_value_coef * vf_loss
+                - self.config.rl_entropy_coef * entropy
+            )
+
+            optimizer.zero_grad()
+            loss.backward()
+            all_params = (
+                list(self.graft.appendage.parameters())
+                + list(self._value_head.parameters())
+            )
+            nn.utils.clip_grad_norm_(all_params, self.config.grad_clip)
+            optimizer.step()
+
+            total_pg += float(pg_loss)
+            total_vf += float(vf_loss)
+            total_ent += float(entropy)
+
+        K = self.config.rl_ppo_epochs
+        return {
+            "rl/pg_loss": total_pg / K,
+            "rl/vf_loss": total_vf / K,
+            "rl/entropy": total_ent / K,
+        }
 
     # ------------------------------------------------------------------ #
     #  Training loop                                                       #
@@ -491,80 +689,84 @@ class RLTrainer:
 
     def train(self, optimizer: optim.Optimizer | None = None) -> list[dict]:
         print(f"{'='*60}")
-        print(f"  RL Fine-tuning — {type(self.graft.appendage).__name__}")
+        print(f"  RL Fine-tuning (PPO) — {type(self.graft.appendage).__name__}")
         print(f"  Steps: {self.config.rl_steps}  |  Device: {self.device}")
+        print(
+            f"  clip={self.config.rl_ppo_clip}  epochs={self.config.rl_ppo_epochs}"
+            f"  GAE λ={self.config.rl_gae_lambda}  std={self.config.rl_action_std}"
+        )
         print(f"{'='*60}")
 
         if optimizer is None:
             optimizer = optim.Adam(
-                self.graft.appendage.parameters(),
+                list(self.graft.appendage.parameters())
+                + list(self._value_head.parameters()),
                 lr=self.config.appendage_lr * 0.1,
             )
 
-        acc_log_probs: list[torch.Tensor] = []
-        acc_returns: list[torch.Tensor] = []
+        acc_steps: list[_RolloutStep] = []
+        acc_rewards_per_ep: list[list[float]] = []
         n_episodes = 0
 
         pbar = tqdm(total=self.config.rl_steps, desc="RL")
         while self._global_step < self.config.rl_steps:
-            log_probs, rewards, info = self._run_episode()
-            returns = self._compute_returns(rewards)
-
-            acc_log_probs.extend(log_probs)
-            acc_returns.extend(returns)
+            steps, rewards, info = self._run_episode()
+            acc_steps.extend(steps)
+            acc_rewards_per_ep.append(rewards)
             n_episodes += 1
 
             if n_episodes % self.config.rl_episodes_per_update == 0:
-                optimizer.zero_grad()
+                # Per-episode GAE, then concatenate across the batch
+                all_adv_list, all_ret_list = [], []
+                start = 0
+                for ep_rewards in acc_rewards_per_ep:
+                    T = len(ep_rewards)
+                    ep_steps = acc_steps[start : start + T]
+                    adv, ret = self._compute_gae(ep_rewards, [s.value for s in ep_steps])
+                    all_adv_list.append(adv)
+                    all_ret_list.append(ret)
+                    start += T
 
-                lp = torch.stack(acc_log_probs)
-                ret = torch.stack(acc_returns)
+                all_adv = torch.cat(all_adv_list)
+                all_ret = torch.cat(all_ret_list)
 
-                # Entropy bonus for discrete actions
-                policy_loss = -(lp * ret).mean()
-                if isinstance(self.graft.appendage, DPadAppendage):
-                    # Entropy of the last step's distribution as regularizer
-                    with torch.no_grad():
-                        last_inputs = _preprocess(
-                            self.processor,
-                            self.env.reset(),
-                            self.env.prompt,
-                            self.device,
-                        )
-                        last_out = self.graft(**last_inputs)
-                    probs = torch.softmax(last_out["action"], dim=-1)
-                    entropy = -(probs * probs.log()).sum(-1).mean()
-                    policy_loss = policy_loss - self.config.rl_entropy_coef * entropy
+                # Normalise advantages across the full batch
+                if all_adv.std() > 1e-6:
+                    all_adv = (all_adv - all_adv.mean()) / (all_adv.std() + 1e-8)
 
-                policy_loss.backward()
-                nn.utils.clip_grad_norm_(
-                    self.graft.appendage.parameters(), self.config.grad_clip
+                update_metrics = self._ppo_update(acc_steps, all_adv, all_ret, optimizer)
+
+                mean_ep_reward = (
+                    sum(sum(r) for r in acc_rewards_per_ep) / len(acc_rewards_per_ep)
                 )
-                optimizer.step()
-
-                ep_reward = sum(rewards)
                 metrics = {
                     "step": self._global_step,
-                    "rl/loss": float(policy_loss),
-                    "rl/episode_reward": ep_reward,
+                    **update_metrics,
+                    "rl/episode_reward": mean_ep_reward,
                     "rl/success": bool(info.get("success", False)),
                     "rl/n_episodes": n_episodes,
                 }
                 self._metrics.append(metrics)
 
                 pbar.update(1)
-                pbar.set_postfix(loss=f"{float(policy_loss):.4f}", reward=f"{ep_reward:.2f}")
+                pbar.set_postfix(
+                    pg=f"{update_metrics['rl/pg_loss']:.4f}",
+                    vf=f"{update_metrics['rl/vf_loss']:.4f}",
+                    rew=f"{mean_ep_reward:.2f}",
+                )
 
                 if self._global_step % self.config.log_every == 0:
                     print(
                         f"  step {self._global_step:5d}  "
-                        f"loss={float(policy_loss):.4f}  "
-                        f"reward={ep_reward:.2f}  "
+                        f"pg={update_metrics['rl/pg_loss']:.4f}  "
+                        f"vf={update_metrics['rl/vf_loss']:.4f}  "
+                        f"ent={update_metrics['rl/entropy']:.4f}  "
+                        f"rew={mean_ep_reward:.2f}  "
                         f"success={info.get('success', False)}"
                     )
 
-                acc_log_probs.clear()
-                acc_returns.clear()
+                acc_steps.clear()
+                acc_rewards_per_ep.clear()
                 self._global_step += 1
 
         pbar.close()

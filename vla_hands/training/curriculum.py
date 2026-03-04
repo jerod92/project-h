@@ -32,8 +32,12 @@ class CurriculumConfig:
 
     # RL phase (set to 0 to skip)
     rl_steps: int = 500
-    rl_max_steps_per_episode: int = 30  # cap per-episode rollout length during RL
-    rl_episodes_per_update: int = 4
+    rl_max_steps_per_episode: int = 30  # cap per-episode rollout length
+    rl_gae_lambda: float = 0.95         # GAE smoothing parameter (λ)
+    rl_ppo_clip: float = 0.2            # PPO clip ratio (ε)
+    rl_ppo_epochs: int = 4              # gradient epochs per rollout batch
+    rl_action_std: float = 0.3          # std for continuous action distributions
+    rl_episodes_per_update: int = 4     # episodes per rollout batch
 
     # Shared
     appendage_lr: float = 1e-4
@@ -66,6 +70,10 @@ class CurriculumConfig:
             batch_size=self.bc_batch_size,
             rl_steps=self.rl_steps,
             rl_max_steps_per_episode=self.rl_max_steps_per_episode,
+            rl_gae_lambda=self.rl_gae_lambda,
+            rl_ppo_clip=self.rl_ppo_clip,
+            rl_ppo_epochs=self.rl_ppo_epochs,
+            rl_action_std=self.rl_action_std,
             rl_episodes_per_update=self.rl_episodes_per_update,
             log_every=self.log_every,
             eval_every=self.eval_every,
@@ -130,8 +138,10 @@ class TrainingCurriculum:
                 config=trainer_cfg,
                 device=device,
             )
+            # Include value head parameters so the baseline is optimised too
             rl_optimizer = optim.Adam(
-                self.graft.appendage.parameters(),
+                list(self.graft.appendage.parameters())
+                + list(rl_trainer._value_head.parameters()),
                 lr=self.config.appendage_lr * 0.1,
             )
             rl_metrics = rl_trainer.train(optimizer=rl_optimizer)
