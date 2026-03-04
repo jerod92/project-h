@@ -5,6 +5,11 @@ from .button_task import ButtonPressEnvironment, MCQButtonEnvironment
 from .grid_world import GridWorldEnvironment
 from .maze import MazeEnvironment
 from .pointing import PointingEnvironment
+from .fruit_catcher import FruitCatcherEnvironment
+from .treasure_hunt import TreasureHuntEnvironment
+from .paint_canvas  import PaintCanvasEnvironment
+from .whack_a_mole  import WhackAMoleEnvironment
+from .mcq_navigator import MCQNavigatorEnvironment
 from .prompt_vocab import (
     BUTTON_PRESS_VOCAB,
     GRID_WORLD_VOCAB,
@@ -32,6 +37,12 @@ __all__ = [
     "MCQButtonEnvironment",
     # Touchscreen / pointing
     "PointingEnvironment",
+    # Multi-appendage / combo
+    "FruitCatcherEnvironment",
+    "TreasureHuntEnvironment",
+    "PaintCanvasEnvironment",
+    "WhackAMoleEnvironment",
+    "MCQNavigatorEnvironment",
     # Prompt vocab
     "PromptVocab",
     "TARGET_NAV_VOCAB",

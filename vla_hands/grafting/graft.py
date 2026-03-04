@@ -323,6 +323,69 @@ class VLAGraft(nn.Module):
         self.appendage.load_state_dict(state_dict, strict=strict)
         print(f"[VLAGraft] Loaded appendage from {path}")
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        vlm_id: str,
+        appendage: "BaseAppendage",
+        checkpoint_path: str | Path,
+        device: str | torch.device = "cpu",
+        config: "GraftConfig | None" = None,
+        vlm_kwargs: dict | None = None,
+    ) -> "VLAGraft":
+        """
+        One-call convenience loader for inference.
+
+        Downloads the VLM from HuggingFace Hub, loads the saved appendage
+        weights, and returns a ready-to-use VLAGraft.
+
+        Args:
+            vlm_id:          HuggingFace model ID (e.g. "HuggingFaceTB/SmolVLM-256M-Instruct").
+            appendage:       Pre-constructed appendage instance with correct hidden_dim.
+            checkpoint_path: Directory produced by VLAGraft.save() containing
+                             ``appendage.pt`` and ``graft_config.json``.
+            device:          Torch device for the graft.
+            config:          Override GraftConfig (auto-loaded from JSON if None).
+            vlm_kwargs:      Extra kwargs forwarded to AutoModelForImageTextToText.from_pretrained.
+
+        Returns:
+            Loaded VLAGraft, moved to ``device``, in eval mode.
+
+        Example::
+
+            from vla_hands import VLAGraft, JoystickAppendage
+            graft = VLAGraft.from_pretrained(
+                vlm_id="HuggingFaceTB/SmolVLM-256M-Instruct",
+                appendage=JoystickAppendage(hidden_dim=1152),
+                checkpoint_path="checkpoints/bc_final",
+                device="cuda",
+            )
+        """
+        try:
+            from transformers import AutoModelForImageTextToText
+        except ImportError:
+            from transformers import AutoModelForVision2Seq as AutoModelForImageTextToText
+
+        vlm_kwargs = vlm_kwargs or {}
+        vlm = AutoModelForImageTextToText.from_pretrained(vlm_id, **vlm_kwargs)
+
+        checkpoint_path = Path(checkpoint_path)
+        if config is None:
+            cfg_file = checkpoint_path / "graft_config.json"
+            if cfg_file.exists():
+                raw = json.loads(cfg_file.read_text())
+                config = GraftConfig(
+                    feature_extraction=raw.get("feature_extraction", "last"),
+                    hidden_dim=raw.get("hidden_dim"),
+                )
+
+        graft = cls(vlm=vlm, appendage=appendage, config=config)
+        graft.load_appendage(checkpoint_path)
+        graft.to(torch.device(device))
+        graft.eval()
+        print(f"[VLAGraft] Ready — device={device}, appendage={type(appendage).__name__}")
+        return graft
+
     # ------------------------------------------------------------------ #
     #  Utilities                                                           #
     # ------------------------------------------------------------------ #

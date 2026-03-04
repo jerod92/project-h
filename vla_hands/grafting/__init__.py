@@ -11,11 +11,13 @@ from .freezing import (
     FreezingStage,
 )
 from .graft import GraftConfig, VLAGraft
+from .composite import CompositeGraft
 from .lora import LoRAConfig, apply_lora, lora_parameter_count, merge_lora
 
 __all__ = [
     "GraftConfig",
     "VLAGraft",
+    "CompositeGraft",
     "FreezingCurriculum",
     "FreezingStage",
     "DEFAULT_CURRICULUM",

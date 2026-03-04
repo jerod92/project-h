@@ -26,6 +26,7 @@ __version__ = "0.1.0"
 
 # Grafting
 from .grafting.graft import GraftConfig, VLAGraft
+from .grafting.composite import CompositeGraft
 from .grafting.lora import LoRAConfig, apply_lora, merge_lora, lora_parameter_count
 from .grafting.freezing import (
     FreezingCurriculum,
@@ -58,6 +59,12 @@ from .environments.grid_world import GridWorldEnvironment
 from .environments.maze import MazeEnvironment
 from .environments.button_task import ButtonPressEnvironment, MCQButtonEnvironment
 from .environments.pointing import PointingEnvironment
+from .environments.fruit_catcher import FruitCatcherEnvironment
+from .environments.treasure_hunt import TreasureHuntEnvironment
+from .environments.paint_canvas  import PaintCanvasEnvironment
+from .environments.whack_a_mole  import WhackAMoleEnvironment
+from .environments.mcq_navigator import MCQNavigatorEnvironment
+
 from .environments.prompt_vocab import (
     PromptVocab,
     TARGET_NAV_VOCAB,
@@ -73,6 +80,20 @@ from .environments.prompt_vocab import (
 from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
 from .training.curriculum import TrainingCurriculum, CurriculumConfig
 
+# Utils
+from .utils.gif import save_rollout_gif, record_expert_gif
+from .utils.viz import plot_training_curves, TrainingSummary
+
+# Auto
+from .auto import (
+    make_env,
+    make_appendage,
+    make_graft,
+    auto_curriculum,
+    recommended_envs,
+    APPENDAGE_ENV_MAP,
+)
+
 # Benchmarks
 from .benchmarks.suite import (
     BenchmarkSuite,
@@ -85,6 +106,7 @@ __all__ = [
     # Grafting
     "VLAGraft",
     "GraftConfig",
+    "CompositeGraft",
     "FreezingCurriculum",
     "FreezingStage",
     "DEFAULT_CURRICULUM",
@@ -122,6 +144,11 @@ __all__ = [
     "ButtonPressEnvironment",
     "MCQButtonEnvironment",
     "PointingEnvironment",
+    "FruitCatcherEnvironment",
+    "TreasureHuntEnvironment",
+    "PaintCanvasEnvironment",
+    "WhackAMoleEnvironment",
+    "MCQNavigatorEnvironment",
     # Prompt vocab
     "PromptVocab",
     "TARGET_NAV_VOCAB",
@@ -137,6 +164,18 @@ __all__ = [
     "TrainerConfig",
     "TrainingCurriculum",
     "CurriculumConfig",
+    # Utils
+    "save_rollout_gif",
+    "record_expert_gif",
+    "plot_training_curves",
+    "TrainingSummary",
+    # Auto
+    "make_env",
+    "make_appendage",
+    "make_graft",
+    "auto_curriculum",
+    "recommended_envs",
+    "APPENDAGE_ENV_MAP",
     # Benchmarks
     "BenchmarkSuite",
     "BenchmarkResult",
