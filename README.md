@@ -282,7 +282,10 @@ Works with any HuggingFace model that:
 - Accepts `pixel_values + input_ids`
 - Supports `output_hidden_states=True`
 
-Tested: **SmolVLM**, **LLaVA**, **Qwen-VL**, **InstructBLIP**, **PaliGemma**.
+**Verified:** SmolVLM (256M, 500M, 2B Instruct variants) — full Colab demo available.
+
+**Expected to work** (API-compatible, not yet validated):
+LLaVA-NeXT, Qwen-VL, InstructBLIP, PaliGemma.
 
 Checkpoint size: only the appendage MLP weights are saved (~50 KB – 2 MB).
 The VLM backbone is loaded separately from HuggingFace Hub.
