@@ -379,11 +379,9 @@ notebooks/
 - [ ] WandB / TensorBoard logging in trainers
 - [ ] Gymnasium-compatible environment wrapper
 - [ ] ONNX / TorchScript export for deployment
-- [ ] Pre-trained appendage zoo (downloadable checkpoints on HF Hub)
+- [ ] Graft zoo (downloadable checkpoints on HF Hub)
 - [ ] Multi-task training (one graft, multiple environments simultaneously)
-- [ ] Slider appendage (1D continuous)
 - [ ] 6-DOF continuous control appendage
-- [ ] Real robot integration example (ROS bridge)
 
 ---
 
