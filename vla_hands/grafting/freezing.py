@@ -225,7 +225,7 @@ class FreezingCurriculum:
 
         layers = self._find_transformer_layers()
         n = min(stage.n_layers_unfrozen, len(layers))
-        for layer in layers[-n:]:
+        for layer in (layers[-n:] if n > 0 else []):
             for p in layer.parameters():
                 p.requires_grad_(True)
 

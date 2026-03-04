@@ -101,7 +101,7 @@ curriculum = TrainingCurriculum(
 metrics = curriculum.run()
 
 # Save appendage weights only (~100 KB)
-graft.save("checkpoints/joystick_nav")
+graft.save("model_checkpoints/joystick_nav")
 
 # One-line inference reload
 from vla_hands.training.trainer import _preprocess
@@ -152,7 +152,7 @@ inputs = _preprocess(processor, obs, env.prompt, "cuda")
 out = graft(**inputs)
 # → {"joystick": Tensor[1,2], "button": Tensor[1,1], "lm_logits": ..., ...}
 
-graft.save("checkpoints/fruit_catcher/")
+graft.save("model_checkpoints/fruit_catcher/")
 ```
 
 ### Touchscreen with vision skip connection
@@ -269,7 +269,7 @@ graft = make_graft(vlm, ["dpad", "button"], hidden_dim=1152)
 graft = VLAGraft.from_pretrained(
     vlm_id="HuggingFaceTB/SmolVLM-256M-Instruct",
     appendage=JoystickAppendage(hidden_dim=1152),
-    checkpoint_path="checkpoints/bc_final",
+    checkpoint_path="model_checkpoints/bc_final",
     device="cuda",
 )
 ```

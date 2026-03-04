@@ -282,7 +282,7 @@ def auto_curriculum(
     env_kwargs: dict | None = None,
     appendage_kwargs: dict | None = None,
     bc_fraction: float = 0.8,
-    save_dir: str = "checkpoints/auto",
+    save_dir: str = "model_checkpoints/auto",
     verbose: bool = True,
 ) -> dict:
     """

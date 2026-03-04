@@ -72,7 +72,7 @@ class TrainerConfig:
     eval_every: int = 200
     eval_episodes: int = 5
     save_every: int = 500
-    save_dir: str = "checkpoints"
+    save_dir: str = "model_checkpoints"
 
     # ── Curriculum ───────────────────────────────────────────────────────
     freezing_stages: list[FreezingStage] = field(

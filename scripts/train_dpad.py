@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "cpu", "cuda", "mps"],
         help="Compute device.",
     )
-    p.add_argument("--save-dir", default="checkpoints/dpad", help="Checkpoint directory.")
+    p.add_argument("--save-dir", default="model_checkpoints/dpad", help="Checkpoint directory.")
     p.add_argument("--grid-size", type=int, default=8, help="Grid world size (NxN cells).")
     p.add_argument("--wall-density", type=float, default=0.20, help="Fraction of cells that are walls.")
     p.add_argument("--eval-episodes", type=int, default=10, help="Episodes for final benchmark.")
@@ -89,11 +89,16 @@ def main() -> int:
     # ── Load VLM ─────────────────────────────────────────────────────────
     print("Loading VLM...")
     processor = AutoProcessor.from_pretrained(args.model)
-    vlm = AutoModelForVision2Seq.from_pretrained(args.model, torch_dtype=torch.float32)
+    vlm = AutoModelForImageTextToText.from_pretrained(args.model, torch_dtype=torch.float32)
     print(f"  Parameters: {sum(p.numel() for p in vlm.parameters()):,}")
 
     # ── Build appendage + graft ──────────────────────────────────────────
-    hidden_dim = vlm.config.hidden_size
+    text_cfg = getattr(vlm.config, "text_config", None)
+    hidden_dim = (
+        text_cfg.hidden_size
+        if text_cfg is not None and hasattr(text_cfg, "hidden_size")
+        else vlm.config.hidden_size
+    )
     appendage = DPadAppendage(hidden_dim=hidden_dim)
     graft = VLAGraft(
         vlm=vlm,

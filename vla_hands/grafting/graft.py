@@ -357,7 +357,7 @@ class VLAGraft(nn.Module):
             graft = VLAGraft.from_pretrained(
                 vlm_id="HuggingFaceTB/SmolVLM-256M-Instruct",
                 appendage=JoystickAppendage(hidden_dim=1152),
-                checkpoint_path="checkpoints/bc_final",
+                checkpoint_path="model_checkpoints/bc_final",
                 device="cuda",
             )
         """
