@@ -388,8 +388,9 @@ class BCTrainer:
             self._metrics.append(metrics)
 
         # Final eval & save
-        ev = self.evaluate(n_episodes=max(self.config.eval_episodes, 10))
-        print(f"\n  Final eval: {ev}")
+        print(f"\n  Running final BC evaluation ({self.config.eval_episodes} episodes)...")
+        ev = self.evaluate(n_episodes=self.config.eval_episodes)
+        print(f"  Final eval: {ev}")
         self.graft.save(Path(self.config.save_dir) / "bc_final")
 
         return self._metrics
@@ -503,6 +504,7 @@ class RLTrainer:
         acc_returns: list[torch.Tensor] = []
         n_episodes = 0
 
+        pbar = tqdm(total=self.config.rl_steps, desc="RL")
         while self._global_step < self.config.rl_steps:
             log_probs, rewards, info = self._run_episode()
             returns = self._compute_returns(rewards)
@@ -549,6 +551,9 @@ class RLTrainer:
                 }
                 self._metrics.append(metrics)
 
+                pbar.update(1)
+                pbar.set_postfix(loss=f"{float(policy_loss):.4f}", reward=f"{ep_reward:.2f}")
+
                 if self._global_step % self.config.log_every == 0:
                     print(
                         f"  step {self._global_step:5d}  "
@@ -561,5 +566,6 @@ class RLTrainer:
                 acc_returns.clear()
                 self._global_step += 1
 
+        pbar.close()
         self.graft.save(Path(self.config.save_dir) / "rl_final")
         return self._metrics
