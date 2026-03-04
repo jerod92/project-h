@@ -1,7 +1,5 @@
 # vla-hands
 
-![Alt text for the image](grafty.png)
-
 **Give VLMs hands.** Graft lightweight action heads onto any Vision-Language Model
 to create a Vision-Language-Action (VLA) model — without touching the VLM backbone.
 
