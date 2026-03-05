@@ -183,7 +183,7 @@ vlm = apply_lora(vlm, LoRAConfig(r=8, alpha=16))  # wraps vlm in peft.PeftModel
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/vla-hands
+git clone https://github.com/jerod92/vla-hands
 cd vla-hands
 pip install -e .
 
