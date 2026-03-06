@@ -102,8 +102,13 @@ class ButtonAppendage(BaseAppendage):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=0.01)
+                nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
+        # Small gain on output layer only — start predictions at sigmoid(0)=0.5
+        # without crushing gradient flow through hidden layers.
+        output_linear = self.net[-2]  # Linear(32, 1), before Sigmoid
+        nn.init.orthogonal_(output_linear.weight, gain=0.01)
+        nn.init.zeros_(output_linear.bias)
 
     @property
     def action_spec(self) -> ActionSpec:
@@ -201,8 +206,13 @@ class MultiButtonAppendage(BaseAppendage):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=0.01)
+                nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
+        # Small gain on output layer only — start predictions at sigmoid(0)=0.5
+        # without crushing gradient flow through hidden layers.
+        output_linear = self.net[-2]  # Linear(64, n_buttons), before Sigmoid
+        nn.init.orthogonal_(output_linear.weight, gain=0.01)
+        nn.init.zeros_(output_linear.bias)
 
     @property
     def action_spec(self) -> ActionSpec:

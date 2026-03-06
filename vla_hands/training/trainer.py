@@ -130,6 +130,50 @@ def _preprocess(processor, image, prompt, device: torch.device) -> dict[str, tor
     return {k: v.to(device) for k, v in inputs.items()}
 
 
+def _preprocess_batch(
+    processor, images: list, prompt: str, device: torch.device
+) -> dict[str, torch.Tensor]:
+    """
+    Batch-preprocess multiple PIL Images + a shared prompt.
+
+    Processes all images in a single call, producing properly padded batch
+    tensors.  Falls back to individual processing + concatenation if the
+    processor doesn't support batched inputs.
+    """
+    n = len(images)
+    if hasattr(processor, "apply_chat_template"):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        text = processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = processor(
+            images=images,
+            text=[text] * n,
+            return_tensors="pt",
+            padding=True,
+        )
+    else:
+        try:
+            inputs = processor(
+                images=images,
+                text=[prompt] * n,
+                return_tensors="pt",
+                padding=True,
+            )
+        except TypeError:
+            # Fallback: process individually and stack
+            batch = [_preprocess(processor, img, prompt, device) for img in images]
+            keys = batch[0].keys()
+            return {k: torch.cat([b[k] for b in batch], dim=0) for k in keys}
+    return {k: v.to(device) for k, v in inputs.items()}
+
+
 def _to_action_tensor(
     appendage: nn.Module,
     expert_actions: list[Any],
@@ -290,18 +334,17 @@ class BCTrainer:
 
         images, expert_actions = self._collect_bc_batch()
         self._optimizer.zero_grad()
-        total_loss = 0.0
 
-        for img, expert_act in zip(images, expert_actions):
-            inputs = _preprocess(self.processor, img, self.env.prompt, self.device)
-            out = self.graft(**inputs)
-            pred = out["action"]  # [1, *action_shape]
+        # Single batched VLM forward pass instead of one-at-a-time
+        inputs = _preprocess_batch(
+            self.processor, images, self.env.prompt, self.device
+        )
+        out = self.graft(**inputs)
+        pred = out["action"]  # [batch, *action_shape]
 
-            target = _to_action_tensor(self.graft.appendage, [expert_act], self.device)
-            loss = self.graft.appendage.action_loss(pred, target)
-            loss = loss / self.config.batch_size
-            loss.backward()
-            total_loss += float(loss)
+        target = _to_action_tensor(self.graft.appendage, expert_actions, self.device)
+        loss = self.graft.appendage.action_loss(pred, target)
+        loss.backward()
 
         # Gradient clipping across all trainable parameters
         trainable = list(self.graft.appendage.parameters()) + [
@@ -313,7 +356,7 @@ class BCTrainer:
         self._global_step += 1
         return {
             "step": self._global_step,
-            "bc/loss": total_loss,
+            "bc/loss": float(loss),
             "stage": (
                 self.curriculum.current_stage.name
                 if self.curriculum.current_stage
@@ -325,6 +368,7 @@ class BCTrainer:
     #  Evaluation                                                          #
     # ------------------------------------------------------------------ #
 
+    @torch.inference_mode()
     def evaluate(self, n_episodes: int | None = None) -> dict:
         n_episodes = n_episodes or self.config.eval_episodes
         self.graft.eval()
@@ -337,11 +381,10 @@ class BCTrainer:
             max_steps = self.env.max_steps
 
             for _ in range(max_steps):
-                with torch.no_grad():
-                    inputs = _preprocess(
-                        self.processor, obs, self.env.prompt, self.device
-                    )
-                    out = self.graft(**inputs)
+                inputs = _preprocess(
+                    self.processor, obs, self.env.prompt, self.device
+                )
+                out = self.graft(**inputs)
                 action_val = _select_action(self.graft.appendage, out["action"])
                 result = self.env.step(action_val)
                 ep_reward += result.reward
@@ -660,7 +703,7 @@ class RLTrainer:
             loss = (
                 pg_loss
                 + self.config.rl_value_coef * vf_loss
-                - self.config.rl_entropy_coef * entropy
+                - self.config.rl_entropy_coef * entropy.mean()
             )
 
             optimizer.zero_grad()
