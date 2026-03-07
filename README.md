@@ -359,17 +359,13 @@ vla_hands/
 │   └── lora.py          LoRA via peft (apply_lora, merge_lora)
 │
 ├── training/
-│   ├── trainer.py       BCTrainer + RLTrainer
-│   └── curriculum.py    TrainingCurriculum (BC → RL pipeline)
+│   ├── trainer.py       BCTrainer + RLTrainer + CurriculumConfig + TrainingCurriculum
+│   └── auto.py          make_env / make_appendage / make_graft / auto_curriculum
 │
 ├── utils/
 │   ├── gif.py           save_rollout_gif, record_expert_gif
-│   └── viz.py           plot_training_curves, TrainingSummary
-│
-├── benchmarks/
-│   └── suite.py         BenchmarkSuite, run_expert_baseline, compare_grafts
-│
-├── auto.py              make_env / make_appendage / auto_curriculum
+│   ├── viz.py           plot_training_curves, TrainingSummary
+│   └── benchmark.py     BenchmarkSuite, run_expert_baseline, compare_grafts
 │
 notebooks/
 └── quickstart_colab.ipynb   Full demo on Colab/Kaggle (SmolVLM-256M)
