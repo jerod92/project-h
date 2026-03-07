@@ -1,0 +1,17 @@
+{
+  "feature_extraction": "last",
+  "hidden_dim": 16,
+  "appendage_type": "DPadAppendage",
+  "action_spec": {
+    "name": "dpad",
+    "shape": [
+      5
+    ],
+    "dtype": "discrete",
+    "n_discrete": 5,
+    "low": null,
+    "high": null
+  },
+  "appendage_hidden_dim": 16,
+  "appendage_n_params": 21157
+}

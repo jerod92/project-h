@@ -286,6 +286,16 @@ class BCTrainer:
             weight_decay=self.config.weight_decay,
         )
 
+    def _get_autocast_kwargs(self) -> dict:
+        enabled = self.device.type in ("cuda", "mps")
+        if self.device.type == "cuda":
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        elif self.device.type == "mps":
+            dtype = torch.float16
+        else:
+            dtype = torch.bfloat16
+        return {"device_type": self.device.type, "dtype": dtype, "enabled": enabled}
+
     def _on_stage_change(self, stage: FreezingStage):
         # Rebuild optimizer so newly unfrozen VLM params are included
         self._optimizer = self._build_optimizer()
@@ -385,7 +395,7 @@ class BCTrainer:
                     self.processor, obs, self.env.prompt, self.device
                 )
                 
-                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                with torch.autocast(**self._get_autocast_kwargs()):
                     out = self.graft(**inputs)
                 
                 action_val = _select_action(self.graft.appendage, out["action"])
@@ -506,6 +516,16 @@ class RLTrainer:
             nn.Linear(128, 1),
         ).to(self.device)
 
+    def _get_autocast_kwargs(self) -> dict:
+        enabled = self.device.type in ("cuda", "mps")
+        if self.device.type == "cuda":
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        elif self.device.type == "mps":
+            dtype = torch.float16
+        else:
+            dtype = torch.bfloat16
+        return {"device_type": self.device.type, "dtype": dtype, "enabled": enabled}
+
     # ------------------------------------------------------------------ #
     #  Squashing helpers                                                   #
     # ------------------------------------------------------------------ #
@@ -596,7 +616,7 @@ class RLTrainer:
         for _ in range(max_steps):
             inputs = _preprocess(self.processor, obs, self.env.prompt, self.device)
             
-            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+            with torch.autocast(**self._get_autocast_kwargs()):
                 out = self.graft(**inputs)
             
             action_out = out["action"]
