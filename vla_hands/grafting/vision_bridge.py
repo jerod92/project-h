@@ -122,15 +122,33 @@ class VisionBridge(BaseAppendage):
     def forward(
         self,
         features: torch.Tensor,                     # [batch, hidden_dim]
-        vision_features: torch.Tensor | None = None, # [batch, vision_dim]
+        vision_features: torch.Tensor | None = None, # [N, vision_dim]  (N >= batch)
     ) -> torch.Tensor:
         """
         Fuse vision + LLM features, then delegate to the wrapped appendage.
 
         When vision_features is None (e.g. no vision hook registered), this
         behaves identically to calling the wrapped appendage directly.
+
+        Note:
+            Some VLMs (SmolVLM / Idefics3) split each input image into multiple
+            sub-images before processing through the vision encoder.  This means
+            vision_features may have a larger batch dimension than ``features``.
+            When this happens, the sub-image features are grouped and mean-pooled
+            back to the original batch size automatically.
         """
         if vision_features is not None:
+            batch_size = features.shape[0]
+            n_vision = vision_features.shape[0]
+
+            if n_vision != batch_size and n_vision > batch_size and n_vision % batch_size == 0:
+                # VLM split each image into N sub-images; pool them back
+                n_sub = n_vision // batch_size
+                vision_features = vision_features.reshape(batch_size, n_sub, -1).mean(dim=1)
+            elif n_vision != batch_size:
+                # Fallback: just mean-pool everything into a single vector and broadcast
+                vision_features = vision_features.mean(dim=0, keepdim=True).expand(batch_size, -1)
+
             v = self.vision_proj(vision_features)  # [batch, hidden_dim]
 
             if self.gate is not None:

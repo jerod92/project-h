@@ -139,3 +139,57 @@ class TestVisionBridgeGradients:
         diff = (out_no_vision - out_with_vision).abs().max().item()
         # Small init → small perturbation
         assert diff < 1.0, f"Bridge init changed output by {diff:.3f}, expected < 1.0"
+
+
+class TestVisionBridgeSubImagePooling:
+    """
+    SmolVLM / Idefics3 splits each image into N sub-images before the vision
+    encoder.  This means vision_features can have batch=N*B while LLM features
+    have batch=B.  The bridge must handle this gracefully.
+    """
+
+    def test_subimage_divisible(self):
+        """4 images × 17 sub-images = 68 vision features → pooled to batch=4."""
+        joystick = JoystickAppendage(hidden_dim=HIDDEN_DIM)
+        bridge = VisionBridge(joystick, vision_dim=VISION_DIM)
+
+        llm_feat = torch.randn(4, HIDDEN_DIM)
+        vis_feat = torch.randn(68, VISION_DIM)  # 4 × 17 sub-images
+        out = bridge(llm_feat, vision_features=vis_feat)
+
+        assert out.shape == (4, 2)
+
+    def test_subimage_single_image(self):
+        """1 image × 17 sub-images = 17 vision features → pooled to batch=1."""
+        joystick = JoystickAppendage(hidden_dim=HIDDEN_DIM)
+        bridge = VisionBridge(joystick, vision_dim=VISION_DIM)
+
+        llm_feat = torch.randn(1, HIDDEN_DIM)
+        vis_feat = torch.randn(17, VISION_DIM)
+        out = bridge(llm_feat, vision_features=vis_feat)
+
+        assert out.shape == (1, 2)
+
+    def test_subimage_non_divisible_fallback(self):
+        """If vision batch isn't divisible by LLM batch, mean-pool everything."""
+        joystick = JoystickAppendage(hidden_dim=HIDDEN_DIM)
+        bridge = VisionBridge(joystick, vision_dim=VISION_DIM)
+
+        llm_feat = torch.randn(3, HIDDEN_DIM)
+        vis_feat = torch.randn(7, VISION_DIM)  # not divisible
+        out = bridge(llm_feat, vision_features=vis_feat)
+
+        assert out.shape == (3, 2)
+
+    def test_subimage_gradients_flow(self):
+        """Gradients should flow through the sub-image pooling."""
+        joystick = JoystickAppendage(hidden_dim=HIDDEN_DIM)
+        bridge = VisionBridge(joystick, vision_dim=VISION_DIM)
+
+        llm_feat = torch.randn(2, HIDDEN_DIM, requires_grad=True)
+        vis_feat = torch.randn(34, VISION_DIM, requires_grad=True)  # 2 × 17
+        out = bridge(llm_feat, vision_features=vis_feat)
+        out.sum().backward()
+
+        assert vis_feat.grad is not None
+        assert llm_feat.grad is not None
