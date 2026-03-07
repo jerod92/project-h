@@ -44,8 +44,11 @@ train = [
 all = ["vla-hands[dev,train]"]
 
 [project.scripts]
-vla-train-joystick = "scripts.train_joystick:main"
-vla-train-dpad = "scripts.train_dpad:main"
+vla-train-joystick   = "scripts.train_joystick:main"
+vla-train-dpad       = "scripts.train_dpad:main"
+vla-train-touchscreen = "scripts.train_touchscreen:main"
+vla-train-composite  = "scripts.train_composite:main"
+vla-train-auto       = "scripts.train_auto:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

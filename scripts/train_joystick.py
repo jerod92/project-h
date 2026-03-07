@@ -27,7 +27,7 @@ from vla_hands import (
     VLAGraft,
     run_expert_baseline,
 )
-from vla_hands.benchmarks.suite import BenchmarkSuite
+from vla_hands.utils.benchmark import BenchmarkSuite
 from vla_hands.grafting.freezing import QUICK_CURRICULUM, DEFAULT_CURRICULUM
 
 

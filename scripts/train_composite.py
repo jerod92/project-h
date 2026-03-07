@@ -136,7 +136,7 @@ def main() -> int:
     print(f"Environment:  {type(env).__name__}")
 
     # ── Minimal BC training loop ─────────────────────────────────────────
-    # (For a full curriculum, use auto_curriculum() from vla_hands.auto)
+    # (For a full curriculum, use auto_curriculum() from vla_hands.training.auto)
     from vla_hands.training.trainer import _preprocess
 
     optimizer = torch.optim.AdamW(graft.parameters(), lr=3e-4)

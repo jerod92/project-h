@@ -48,17 +48,17 @@ def _env_map() -> dict[str, Any]:
     global _ENV_MAP
     if _ENV_MAP:
         return _ENV_MAP
-    from .environments.target_nav    import TargetNavEnvironment
-    from .environments.spaceship     import SpaceshipNavEnvironment
-    from .environments.grid_world    import GridWorldEnvironment
-    from .environments.maze          import MazeEnvironment
-    from .environments.button_task   import ButtonPressEnvironment, MCQButtonEnvironment
-    from .environments.pointing      import PointingEnvironment
-    from .environments.fruit_catcher import FruitCatcherEnvironment
-    from .environments.treasure_hunt import TreasureHuntEnvironment
-    from .environments.paint_canvas  import PaintCanvasEnvironment
-    from .environments.whack_a_mole  import WhackAMoleEnvironment
-    from .environments.mcq_navigator import MCQNavigatorEnvironment
+    from ..environments.target_nav    import TargetNavEnvironment
+    from ..environments.spaceship     import SpaceshipNavEnvironment
+    from ..environments.grid_world    import GridWorldEnvironment
+    from ..environments.maze          import MazeEnvironment
+    from ..environments.button_task   import ButtonPressEnvironment, MCQButtonEnvironment
+    from ..environments.pointing      import PointingEnvironment
+    from ..environments.fruit_catcher import FruitCatcherEnvironment
+    from ..environments.treasure_hunt import TreasureHuntEnvironment
+    from ..environments.paint_canvas  import PaintCanvasEnvironment
+    from ..environments.whack_a_mole  import WhackAMoleEnvironment
+    from ..environments.mcq_navigator import MCQNavigatorEnvironment
     _ENV_MAP = {
         # canonical names
         "target_nav":    TargetNavEnvironment,
@@ -89,10 +89,10 @@ def _env_map() -> dict[str, Any]:
 # ── Appendage name map ────────────────────────────────────────────────────────
 
 def _appendage_map() -> dict[str, Any]:
-    from .appendages.joystick    import JoystickAppendage
-    from .appendages.dpad        import DPadAppendage
-    from .appendages.button      import ButtonAppendage, MultiButtonAppendage
-    from .appendages.touchscreen import TouchscreenAppendage
+    from ..appendages.joystick    import JoystickAppendage
+    from ..appendages.dpad        import DPadAppendage
+    from ..appendages.button      import ButtonAppendage, MultiButtonAppendage
+    from ..appendages.touchscreen import TouchscreenAppendage
     return {
         "joystick":     JoystickAppendage,
         "dpad":         DPadAppendage,
@@ -244,8 +244,8 @@ def make_graft(
         graft = make_graft(vlm, "joystick", hidden_dim=1152)
         graft = make_graft(vlm, ["joystick", "button"], hidden_dim=1152)
     """
-    from .grafting.graft import GraftConfig, VLAGraft
-    from .grafting.composite import CompositeGraft
+    from ..grafting.graft import GraftConfig, VLAGraft
+    from ..grafting.composite import CompositeGraft
 
     if isinstance(appendage_names, str):
         appendage_names = [appendage_names]
@@ -358,8 +358,8 @@ def auto_curriculum(
 
     results: dict = {"graft": graft, "env": env, "bc": [], "rl": []}
 
-    from .grafting.graft import VLAGraft
-    from .grafting.composite import CompositeGraft
+    from ..grafting.graft import VLAGraft
+    from ..grafting.composite import CompositeGraft
 
     if isinstance(graft, VLAGraft):
         _run_single_graft(graft, processor, env, bc_steps, rl_steps,
@@ -384,8 +384,8 @@ def _run_single_graft(graft, processor, env, bc_steps, rl_steps,
                       rl_gae_lambda: float = 0.95,
                       rl_action_std: float = 0.3):
     """BC + RL training for a single-appendage VLAGraft."""
-    from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
-    from .grafting.freezing import QUICK_CURRICULUM
+    from .trainer import BCTrainer, RLTrainer, TrainerConfig
+    from ..grafting.freezing import QUICK_CURRICULUM
 
     cfg = TrainerConfig(
         bc_steps=bc_steps,
@@ -419,8 +419,8 @@ def _run_composite_graft(graft, processor, env, bc_steps, rl_steps,
 
     Runs one forward pass per sample and sums losses across all appendages.
     """
-    from .training.trainer import _preprocess, _to_action_tensor
-    from .grafting.freezing import QUICK_CURRICULUM, FreezingCurriculum
+    from .trainer import _preprocess, _to_action_tensor
+    from ..grafting.freezing import QUICK_CURRICULUM, FreezingCurriculum
     import torch
     import torch.nn as nn
     import torch.optim as optim

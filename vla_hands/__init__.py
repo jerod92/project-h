@@ -78,29 +78,26 @@ from .environments.prompt_vocab import (
 )
 
 # Training
-from .training.trainer import BCTrainer, RLTrainer, TrainerConfig
-from .training.curriculum import TrainingCurriculum, CurriculumConfig
+from .training.trainer import BCTrainer, CurriculumConfig, RLTrainer, TrainerConfig, TrainingCurriculum
 
-# Utils
+# Utils + Benchmarks
 from .utils.gif import save_rollout_gif, record_expert_gif
 from .utils.viz import plot_training_curves, TrainingSummary
+from .utils.benchmark import (
+    BenchmarkSuite,
+    BenchmarkResult,
+    compare_grafts,
+    run_expert_baseline,
+)
 
 # Auto
-from .auto import (
+from .training.auto import (
     make_env,
     make_appendage,
     make_graft,
     auto_curriculum,
     recommended_envs,
     APPENDAGE_ENV_MAP,
-)
-
-# Benchmarks
-from .benchmarks.suite import (
-    BenchmarkSuite,
-    BenchmarkResult,
-    compare_grafts,
-    run_expert_baseline,
 )
 
 __all__ = [

@@ -29,7 +29,7 @@ from vla_hands import (
     run_expert_baseline,
 )
 from vla_hands.appendages.touchscreen import TouchscreenAppendage
-from vla_hands.benchmarks.suite import BenchmarkSuite
+from vla_hands.utils.benchmark import BenchmarkSuite
 from vla_hands.environments.pointing import PointingEnvironment
 from vla_hands.grafting.freezing import DEFAULT_CURRICULUM, QUICK_CURRICULUM
 

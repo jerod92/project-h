@@ -21,7 +21,7 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vla_hands.auto import auto_curriculum, recommended_envs
+from vla_hands.training.auto import auto_curriculum, recommended_envs
 
 VALID_APPENDAGES = ["joystick", "dpad", "button", "multibutton", "touchscreen"]
 
