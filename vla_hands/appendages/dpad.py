@@ -90,8 +90,13 @@ class DPadAppendage(BaseAppendage):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=0.01)
+                nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
+        # Small gain on output layer only — start with near-uniform logits
+        # without crushing gradient flow through hidden layers.
+        output_linear = self.net[-1]  # Linear(64, N_ACTIONS), no activation after
+        nn.init.orthogonal_(output_linear.weight, gain=0.01)
+        nn.init.zeros_(output_linear.bias)
 
     @property
     def action_spec(self) -> ActionSpec:
