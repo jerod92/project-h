@@ -27,6 +27,7 @@ __version__ = "0.1.0"
 # Grafting
 from .grafting.graft import GraftConfig, VLAGraft
 from .grafting.composite import CompositeGraft
+from .grafting.vision_bridge import VisionBridge
 from .grafting.lora import LoRAConfig, apply_lora, merge_lora, lora_parameter_count
 from .grafting.freezing import (
     FreezingCurriculum,
@@ -107,6 +108,7 @@ __all__ = [
     "VLAGraft",
     "GraftConfig",
     "CompositeGraft",
+    "VisionBridge",
     "FreezingCurriculum",
     "FreezingStage",
     "DEFAULT_CURRICULUM",
