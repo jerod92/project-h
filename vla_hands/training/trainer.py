@@ -358,8 +358,32 @@ class BCTrainer:
         inputs = _preprocess_batch(
             self.processor, images, self.env.prompt, self.device
         )
-        out = self.graft(**inputs)
-        pred = out["action"]  # [batch, *action_shape]
+
+        # When the VLM backbone is fully frozen, avoid computing gradients
+        # through the entire model — only the tiny appendage needs gradients.
+        # This gives identical learning but each step runs much faster.
+        vlm_has_trainable = any(
+            p.requires_grad for p in self.graft.vlm.parameters()
+        )
+
+        if vlm_has_trainable:
+            # Full gradient flow through VLM + appendage (layers are unfrozen)
+            out = self.graft(**inputs)
+            pred = out["action"]  # [batch, *action_shape]
+        else:
+            # Fast path: run VLM without gradient tracking, then re-run
+            # only the appendage forward pass with gradients enabled.
+            with torch.no_grad():
+                out = self.graft(**inputs)
+            features = out["action_features"]
+            # Re-run appendage with gradient tracking on detached features
+            vision_hook = self.graft._vision_hook
+            if vision_hook is not None and vision_hook.features is not None:
+                pred = self.graft.appendage(
+                    features, vision_features=vision_hook.features
+                )
+            else:
+                pred = self.graft.appendage(features)
 
         target = _to_action_tensor(self.graft.appendage, expert_actions, self.device)
         loss = self.graft.appendage.action_loss(pred, target)
