@@ -1,0 +1,21 @@
+# System-agnostic requirements extracted from pyproject.toml
+# These are the core dependencies for the project
+
+# Core dependencies
+torch>=2.1.0
+transformers>=4.40.0
+Pillow>=10.0.0
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# Optional Dev Dependencies
+# pytest>=7.4.0
+# pytest-cov
+# black
+# isort
+# mypy
+
+# Optional Train Dependencies
+# wandb>=0.16.0
+# tensorboard>=2.14.0
+# accelerate>=0.25.0
