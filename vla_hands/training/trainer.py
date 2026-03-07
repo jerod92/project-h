@@ -174,12 +174,20 @@ def _preprocess_batch(
     return {k: v.to(device) for k, v in inputs.items()}
 
 
+def _unwrap_appendage(appendage: nn.Module) -> nn.Module:
+    """See through VisionBridge (or any future wrapper) to the real appendage."""
+    while hasattr(appendage, 'wrapped'):
+        appendage = appendage.wrapped
+    return appendage
+
+
 def _to_action_tensor(
     appendage: nn.Module,
     expert_actions: list[Any],
     device: torch.device,
 ) -> torch.Tensor:
     """Convert a list of expert actions to a target tensor matching the appendage type."""
+    appendage = _unwrap_appendage(appendage)
     if isinstance(appendage, (JoystickAppendage, TouchscreenAppendage)):
         targets = []
         for a in expert_actions:
@@ -224,6 +232,7 @@ def _select_action(appendage: nn.Module, action_out: torch.Tensor, explore: bool
     For inference (explore=False): argmax / raw values.
     For exploration (explore=True): sample / add noise.
     """
+    appendage = _unwrap_appendage(appendage)
     if isinstance(appendage, DPadAppendage):
         if explore:
             return int(appendage.sample(action_out, temperature=1.0).item())
