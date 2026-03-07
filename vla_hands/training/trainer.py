@@ -384,7 +384,10 @@ class BCTrainer:
                 inputs = _preprocess(
                     self.processor, obs, self.env.prompt, self.device
                 )
-                out = self.graft(**inputs)
+                
+                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                    out = self.graft(**inputs)
+                
                 action_val = _select_action(self.graft.appendage, out["action"])
                 result = self.env.step(action_val)
                 ep_reward += result.reward
@@ -543,8 +546,12 @@ class RLTrainer:
             return u, dist.log_prob(u), dist.entropy()
 
         if squash == "tanh":
-            # action_out ∈ [-1, 1]; invert tanh to get unbounded mean
-            u_mean = torch.atanh(action_out.clamp(-1 + 1e-6, 1 - 1e-6))
+            # For continuous joystick actions, don't use atanh inverse on clipped actions.
+            # action_out is already the mean in the squashed space, but PPO needs unconstrained.
+            # To fix gradient saturation, we assume action_out is un-squashed logits if we're in RL.
+            # Actually, to make this work seamlessly without changing JoystickAppendage, we will
+            # use a looser clamp to prevent complete gradient annihilation, and ensure the gradient flows.
+            u_mean = torch.atanh(action_out.clamp(-1 + 1e-4, 1 - 1e-4))
             dist = Normal(u_mean, torch.full_like(u_mean, sigma))
             u = dist.rsample() if u_sample is None else u_sample
             action = torch.tanh(u)
@@ -553,7 +560,7 @@ class RLTrainer:
             ent = dist.entropy().sum(-1)
         else:  # sigmoid
             # action_out ∈ [0, 1]; invert sigmoid (logit) to get unbounded mean
-            u_mean = torch.logit(action_out.clamp(1e-6, 1 - 1e-6))
+            u_mean = torch.logit(action_out.clamp(1e-4, 1 - 1e-4))
             dist = Normal(u_mean, torch.full_like(u_mean, sigma))
             u = dist.rsample() if u_sample is None else u_sample
             action = torch.sigmoid(u)
@@ -588,7 +595,10 @@ class RLTrainer:
 
         for _ in range(max_steps):
             inputs = _preprocess(self.processor, obs, self.env.prompt, self.device)
-            out = self.graft(**inputs)
+            
+            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                out = self.graft(**inputs)
+            
             action_out = out["action"]
             # Cache features detached from the VLM graph — reused for PPO epochs
             features = out["action_features"].squeeze(0).detach()  # [hidden_dim]
@@ -715,9 +725,9 @@ class RLTrainer:
             nn.utils.clip_grad_norm_(all_params, self.config.grad_clip)
             optimizer.step()
 
-            total_pg += float(pg_loss)
-            total_vf += float(vf_loss)
-            total_ent += float(entropy)
+            total_pg += pg_loss.item()
+            total_vf += vf_loss.item()
+            total_ent += entropy.mean().item()
 
         K = self.config.rl_ppo_epochs
         return {
