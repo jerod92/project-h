@@ -72,7 +72,7 @@ class TrainerConfig:
     rl_entropy_coef: float = 0.02       # entropy bonus (all action types)
     rl_value_coef: float = 0.5          # value function loss weight (PPO only)
     rl_action_std: float = 0.3          # std for continuous action distributions
-    rl_episodes_per_update: int = 8     # episodes per rollout batch
+    rl_episodes_per_update: int = 16    # episodes per rollout batch
     # ── Algorithm choice ─────────────────────────────────────────────────
     # "grpo" — Group Relative Policy Optimisation (default, recommended):
     #     No value network needed. Uses group-normalised episode returns as
@@ -514,12 +514,13 @@ class BCTrainer:
 @dataclass
 class _RolloutStep:
     """One environment transition collected during a PPO rollout."""
-    features: torch.Tensor   # VLM action_features, cached + detached, shape [hidden_dim]
-    u: torch.Tensor          # pre-squash sample (continuous) or sampled idx (discrete)
-    log_prob: torch.Tensor   # log π_old(a|s), scalar
-    entropy: torch.Tensor    # H[π(·|s)], scalar
-    value: torch.Tensor      # V̂(s) from value head, scalar
-    squash: str              # "tanh" | "sigmoid" | "categorical"
+    features: torch.Tensor              # VLM action_features, cached + detached, shape [hidden_dim]
+    u: torch.Tensor                     # pre-squash sample (continuous) or sampled idx (discrete)
+    log_prob: torch.Tensor              # log π_old(a|s), scalar
+    entropy: torch.Tensor               # H[π(·|s)], scalar
+    value: torch.Tensor                 # V̂(s) from value head, scalar
+    squash: str                         # "tanh" | "sigmoid" | "categorical"
+    vision_features: torch.Tensor | None = None  # VisionBridge skip features, cached + detached
 
 
 class RLTrainer:
@@ -569,6 +570,11 @@ class RLTrainer:
             ).to(self.device)
         else:
             self._value_head = None
+
+        # EMA return baseline for GRPO — keeps gradient signal alive when all
+        # episodes in a batch have identical returns (common in early training).
+        self._grpo_return_ema: float = 0.0
+        self._grpo_ema_alpha: float = 0.1
 
     def _get_autocast_kwargs(self) -> dict:
         enabled = self.device.type in ("cuda", "mps")
@@ -664,7 +670,8 @@ class RLTrainer:
         sigma = self.config.rl_action_std
 
         self.graft.train()
-        self._value_head.train()
+        if self._value_head is not None:
+            self._value_head.train()
 
         for _ in range(max_steps):
             inputs = _preprocess(self.processor, obs, self.env.prompt, self.device)
@@ -675,6 +682,11 @@ class RLTrainer:
             action_out = out["action"]
             # Cache features detached from the VLM graph — reused for update epochs
             features = out["action_features"].squeeze(0).detach()  # [hidden_dim]
+            # Cache vision skip features if VisionBridge is active — must be
+            # replayed during the GRPO/PPO update so importance weights are correct.
+            vision_feat = None
+            if self.graft._vision_hook is not None and self.graft._vision_hook.features is not None:
+                vision_feat = self.graft._vision_hook.features.detach()
             value = (
                 self._value_head(features.unsqueeze(0)).squeeze()
                 if self._value_head is not None
@@ -700,6 +712,7 @@ class RLTrainer:
                 entropy=entropy,
                 value=value,
                 squash=squash,
+                vision_features=vision_feat,
             ))
 
             result = self.env.step(action_val)
@@ -852,11 +865,25 @@ class RLTrainer:
 
         ret_t = torch.tensor(total_returns, dtype=torch.float32, device=self.device)
 
+        # Update EMA return baseline before computing advantages.
+        # This preserves gradient signal when all episodes in the batch have
+        # identical returns (std ≈ 0), which is common early in training when
+        # every episode times out. Without this, advantages collapse to zero
+        # and the policy receives no learning signal at all.
+        batch_mean = ret_t.mean().item()
+        self._grpo_return_ema = (
+            (1 - self._grpo_ema_alpha) * self._grpo_return_ema
+            + self._grpo_ema_alpha * batch_mean
+        )
+
         # Group-relative advantage: normalise within the batch
         if ret_t.std() > 1e-6:
             adv_per_ep = (ret_t - ret_t.mean()) / (ret_t.std() + 1e-8)
         else:
-            adv_per_ep = ret_t - ret_t.mean()  # zero if all returns identical
+            # All returns identical: use EMA baseline to keep signal alive.
+            # Negative when current batch is worse than recent history, positive
+            # when it's better — correct direction even with zero within-batch variance.
+            adv_per_ep = ret_t - self._grpo_return_ema
 
         total_pg = total_ent = 0.0
 
@@ -868,8 +895,15 @@ class RLTrainer:
             old_lp   = torch.stack([s.log_prob for s in ep_steps]).detach()  # [T]
             old_u    = torch.stack([s.u for s in ep_steps])              # [T] or [T, D]
 
-            # Re-evaluate policy on cached features with current parameters
-            new_action_out = self.graft.appendage(features)              # [T, *]
+            # Re-evaluate policy on cached features with current parameters.
+            # Pass the cached vision features so VisionBridge produces the same
+            # fused representation as during rollout — keeping importance weights correct.
+            ep_vision = ep_steps[0].vision_features  # [N_patches, vision_dim] or None
+            new_action_out = (
+                self.graft.appendage(features, vision_features=ep_vision)
+                if ep_vision is not None
+                else self.graft.appendage(features)
+            )                                                             # [T, *]
             _, new_lp, entropy = self._log_prob_and_entropy(
                 new_action_out, sigma, squash, u_sample=old_u
             )
@@ -1027,7 +1061,7 @@ class CurriculumConfig:
     rl_ppo_clip: float = 0.2            # surrogate clip ratio (ε)
     rl_ppo_epochs: int = 4              # gradient epochs per rollout batch  [PPO only]
     rl_action_std: float = 0.3          # std for continuous action distributions
-    rl_episodes_per_update: int = 8     # episodes per rollout batch
+    rl_episodes_per_update: int = 16    # episodes per rollout batch
     rl_algorithm: str = "grpo"          # "grpo" (default) or "ppo"
 
     # Shared

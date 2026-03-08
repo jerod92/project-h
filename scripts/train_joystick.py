@@ -25,6 +25,7 @@ from vla_hands import (
     TargetNavEnvironment,
     TrainingCurriculum,
     VLAGraft,
+    VisionBridge,
     run_expert_baseline,
 )
 from vla_hands.utils.benchmark import BenchmarkSuite
@@ -103,6 +104,12 @@ def main() -> int:
         else vlm.config.hidden_size
     )
     appendage = JoystickAppendage(hidden_dim=hidden_dim)
+    vision_dim = VLAGraft.detect_vision_dim(vlm)
+    if vision_dim is not None:
+        appendage = VisionBridge(appendage, vision_dim=vision_dim)
+        print(f"  VisionBridge enabled (vision_dim={vision_dim})")
+    else:
+        print("  VisionBridge disabled (vision encoder dim not detected)")
     graft = VLAGraft(
         vlm=vlm,
         appendage=appendage,
