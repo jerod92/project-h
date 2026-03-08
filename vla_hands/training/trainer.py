@@ -79,6 +79,11 @@ class TrainerConfig:
     #     advantages. Simpler, more stable for sparse/episodic rewards.
     # "ppo"  — Proximal Policy Optimisation with GAE and a learned value head.
     rl_algorithm: str = "grpo"
+    # ── Early stopping ───────────────────────────────────────────────────
+    # Stop BC when loss drops below this threshold (None = run full bc_steps).
+    bc_early_stop_loss: float | None = None
+    # Stop RL when batch success rate hits this fraction (None = run full rl_steps).
+    rl_early_stop_success: float | None = None
 
     # ── Logging & checkpointing ──────────────────────────────────────────
     log_every: int = 50
@@ -499,6 +504,16 @@ class BCTrainer:
                 self.graft.save(Path(self.config.save_dir) / f"bc_step_{step:06d}")
 
             self._metrics.append(metrics)
+
+            if (
+                self.config.bc_early_stop_loss is not None
+                and metrics["bc/loss"] < self.config.bc_early_stop_loss
+            ):
+                print(
+                    f"\n  ✓ Early stop @ step {step}: "
+                    f"loss {metrics['bc/loss']:.4f} < {self.config.bc_early_stop_loss}"
+                )
+                break
 
         # Final eval & save
         print(f"\n  Running final BC evaluation ({self.config.eval_episodes} episodes)...")
@@ -960,6 +975,7 @@ class RLTrainer:
         # Also keep flat lists for PPO (which needs concatenated steps)
         acc_steps_flat: list[_RolloutStep] = []
         acc_rewards_per_ep: list[list[float]] = []
+        acc_success_per_ep: list[bool] = []
         n_episodes = 0
         last_info: dict = {}
 
@@ -969,6 +985,7 @@ class RLTrainer:
             acc_episodes.append((steps, rewards))
             acc_steps_flat.extend(steps)
             acc_rewards_per_ep.append(rewards)
+            acc_success_per_ep.append(bool(info.get("success", False)))
             last_info = info
             n_episodes += 1
 
@@ -1028,10 +1045,22 @@ class RLTrainer:
                         f"success={info.get('success', False)}"
                     )
 
+                batch_success_rate = sum(acc_success_per_ep) / max(len(acc_success_per_ep), 1)
                 acc_episodes.clear()
                 acc_steps_flat.clear()
                 acc_rewards_per_ep.clear()
+                acc_success_per_ep.clear()
                 self._global_step += 1
+
+                if (
+                    self.config.rl_early_stop_success is not None
+                    and batch_success_rate >= self.config.rl_early_stop_success
+                ):
+                    print(
+                        f"\n  ✓ Early stop @ RL step {self._global_step}: "
+                        f"batch success {batch_success_rate:.0%} ≥ {self.config.rl_early_stop_success:.0%}"
+                    )
+                    break
 
         pbar.close()
         self.graft.save(Path(self.config.save_dir) / "rl_final")
@@ -1063,6 +1092,9 @@ class CurriculumConfig:
     rl_action_std: float = 0.3          # std for continuous action distributions
     rl_episodes_per_update: int = 16    # episodes per rollout batch
     rl_algorithm: str = "grpo"          # "grpo" (default) or "ppo"
+    # Early stopping
+    bc_early_stop_loss: float | None = None   # stop BC when loss < this
+    rl_early_stop_success: float | None = None  # stop RL when batch success >= this
 
     # Shared
     appendage_lr: float = 1e-4
@@ -1101,6 +1133,8 @@ class CurriculumConfig:
             rl_action_std=self.rl_action_std,
             rl_episodes_per_update=self.rl_episodes_per_update,
             rl_algorithm=self.rl_algorithm,
+            bc_early_stop_loss=self.bc_early_stop_loss,
+            rl_early_stop_success=self.rl_early_stop_success,
             log_every=self.log_every,
             eval_every=self.eval_every,
             eval_episodes=self.eval_episodes,
