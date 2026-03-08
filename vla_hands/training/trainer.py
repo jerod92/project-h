@@ -62,17 +62,23 @@ class TrainerConfig:
     # Random env steps taken before sampling an expert state (diversifies BC data)
     bc_warmup_steps_range: tuple[int, int] = (0, 8)
 
-    # ── RL (PPO) ─────────────────────────────────────────────────────────
+    # ── RL ───────────────────────────────────────────────────────────────
     rl_steps: int = 500
     rl_max_steps_per_episode: int = 30  # cap per-episode rollout length
     rl_gamma: float = 0.99              # discount factor
     rl_gae_lambda: float = 0.95         # GAE smoothing parameter (λ)
-    rl_ppo_clip: float = 0.2            # PPO surrogate clip ratio (ε)
-    rl_ppo_epochs: int = 4              # gradient epochs per rollout batch
+    rl_ppo_clip: float = 0.2            # surrogate clip ratio (ε) — used by both PPO and GRPO
+    rl_ppo_epochs: int = 4              # gradient epochs per rollout batch (PPO only)
     rl_entropy_coef: float = 0.02       # entropy bonus (all action types)
-    rl_value_coef: float = 0.5          # value function loss weight
+    rl_value_coef: float = 0.5          # value function loss weight (PPO only)
     rl_action_std: float = 0.3          # std for continuous action distributions
-    rl_episodes_per_update: int = 4     # episodes per rollout batch
+    rl_episodes_per_update: int = 8     # episodes per rollout batch
+    # ── Algorithm choice ─────────────────────────────────────────────────
+    # "grpo" — Group Relative Policy Optimisation (default, recommended):
+    #     No value network needed. Uses group-normalised episode returns as
+    #     advantages. Simpler, more stable for sparse/episodic rewards.
+    # "ppo"  — Proximal Policy Optimisation with GAE and a learned value head.
+    rl_algorithm: str = "grpo"
 
     # ── Logging & checkpointing ──────────────────────────────────────────
     log_every: int = 50
@@ -242,8 +248,12 @@ def _select_action(appendage: nn.Module, action_out: torch.Tensor, explore: bool
         return val
     elif isinstance(appendage, MultiButtonAppendage):
         return action_out.squeeze(0).detach().cpu().tolist()
+    elif isinstance(appendage, JoystickAppendage):
+        # Network returns pre-squash logits; apply tanh to get bounded action.
+        raw = action_out.squeeze(0).detach().cpu()
+        return torch.tanh(raw).tolist()
     else:
-        # JoystickAppendage, TouchscreenAppendage, and any future continuous heads
+        # TouchscreenAppendage applies sigmoid internally → already in [0, 1].
         raw = action_out.squeeze(0).detach().cpu().tolist()
         return raw
 
@@ -359,24 +369,28 @@ class BCTrainer:
             self.processor, images, self.env.prompt, self.device
         )
 
-        # When the VLM backbone is fully frozen, avoid computing gradients
-        # through the entire model — only the tiny appendage needs gradients.
-        # This gives identical learning but each step runs much faster.
+        # When the VLM backbone is fully frozen AND there are no action query tokens,
+        # we can skip VLM gradient computation entirely (fast path).
+        # When action query tokens exist, the cross-attention needs gradients,
+        # so we use the full forward pass — but autograd still skips frozen VLM
+        # params automatically since their requires_grad=False.
         vlm_has_trainable = any(
             p.requires_grad for p in self.graft.vlm.parameters()
         )
+        has_action_queries = self.graft._action_queries is not None
 
-        if vlm_has_trainable:
-            # Full gradient flow through VLM + appendage (layers are unfrozen)
-            out = self.graft(**inputs)
+        if vlm_has_trainable or has_action_queries:
+            # Full forward pass — autograd only computes grads for trainable params.
+            # VLM params are frozen (requires_grad=False), so no VLM backward cost.
+            with torch.autocast(**self._get_autocast_kwargs()):
+                out = self.graft(**inputs)
             pred = out["action"]  # [batch, *action_shape]
         else:
-            # Fast path: run VLM without gradient tracking, then re-run
-            # only the appendage forward pass with gradients enabled.
+            # Ultra-fast path: VLM frozen + no action queries.
+            # Run VLM with no_grad, then re-run only the tiny appendage.
             with torch.no_grad():
                 out = self.graft(**inputs)
             features = out["action_features"]
-            # Re-run appendage with gradient tracking on detached features
             vision_hook = self.graft._vision_hook
             if vision_hook is not None and vision_hook.features is not None:
                 pred = self.graft.appendage(
@@ -389,10 +403,13 @@ class BCTrainer:
         loss = self.graft.appendage.action_loss(pred, target)
         loss.backward()
 
-        # Gradient clipping across all trainable parameters
-        trainable = list(self.graft.appendage.parameters()) + [
-            p for p in self.graft.vlm.parameters() if p.requires_grad
-        ]
+        # Gradient clipping: appendage + action queries/cross-attn + unfrozen VLM layers
+        trainable = list(self.graft.appendage.parameters())
+        if self.graft._action_queries is not None:
+            trainable.append(self.graft._action_queries)
+        if self.graft._action_cross_attn is not None:
+            trainable.extend(self.graft._action_cross_attn.parameters())
+        trainable += [p for p in self.graft.vlm.parameters() if p.requires_grad]
         nn.utils.clip_grad_norm_(trainable, self.config.grad_clip)
         self._optimizer.step()
 
@@ -542,12 +559,16 @@ class RLTrainer:
         self.graft.to(self.device)
 
         # Small value head — re-uses cached VLM features, so it's cheap.
+        # Only created for PPO; GRPO uses group-normalised episode returns instead.
         hidden_dim = self.graft.config.hidden_dim
-        self._value_head = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.Tanh(),
-            nn.Linear(128, 1),
-        ).to(self.device)
+        if self.config.rl_algorithm == "ppo":
+            self._value_head: nn.Module | None = nn.Sequential(
+                nn.Linear(hidden_dim, 128),
+                nn.Tanh(),
+                nn.Linear(128, 1),
+            ).to(self.device)
+        else:
+            self._value_head = None
 
     def _get_autocast_kwargs(self) -> dict:
         enabled = self.device.type in ("cuda", "mps")
@@ -599,12 +620,11 @@ class RLTrainer:
             return u, dist.log_prob(u), dist.entropy()
 
         if squash == "tanh":
-            # For continuous joystick actions, don't use atanh inverse on clipped actions.
-            # action_out is already the mean in the squashed space, but PPO needs unconstrained.
-            # To fix gradient saturation, we assume action_out is un-squashed logits if we're in RL.
-            # Actually, to make this work seamlessly without changing JoystickAppendage, we will
-            # use a looser clamp to prevent complete gradient annihilation, and ensure the gradient flows.
-            u_mean = torch.atanh(action_out.clamp(-1 + 1e-4, 1 - 1e-4))
+            # JoystickAppendage.forward() now returns pre-squash logits directly
+            # (tanh is no longer baked into the network). Use action_out as u_mean
+            # without any atanh round-trip — avoiding the gradient saturation that
+            # occurred when BC drove pre-tanh values to ±2–3.
+            u_mean = action_out
             dist = Normal(u_mean, torch.full_like(u_mean, sigma))
             u = dist.rsample() if u_sample is None else u_sample
             action = torch.tanh(u)
@@ -653,9 +673,13 @@ class RLTrainer:
                 out = self.graft(**inputs)
             
             action_out = out["action"]
-            # Cache features detached from the VLM graph — reused for PPO epochs
+            # Cache features detached from the VLM graph — reused for update epochs
             features = out["action_features"].squeeze(0).detach()  # [hidden_dim]
-            value = self._value_head(features.unsqueeze(0)).squeeze()  # scalar
+            value = (
+                self._value_head(features.unsqueeze(0)).squeeze()
+                if self._value_head is not None
+                else torch.tensor(0.0, device=self.device)
+            )
 
             u, log_prob, entropy = self._log_prob_and_entropy(action_out, sigma, squash)
 
@@ -790,57 +814,156 @@ class RLTrainer:
         }
 
     # ------------------------------------------------------------------ #
+    #  GRPO update                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _grpo_update(
+        self,
+        all_episodes: list[tuple[list[_RolloutStep], list[float]]],
+        optimizer: optim.Optimizer,
+    ) -> dict:
+        """
+        Group Relative Policy Optimisation update.
+
+        Inspired by DeepSeek-R1 / GR00T GRPO: treats each episode in the
+        rollout batch as a "group member", normalises their total returns
+        within the group, and uses that as the per-episode advantage.
+
+        No value head needed — the group mean acts as a natural baseline.
+        One gradient pass per episode (no PPO re-use epochs needed since the
+        value estimator is not updated and we don't need multiple passes for
+        variance reduction).
+
+        Args:
+            all_episodes: list of (steps, per_step_rewards) for each episode.
+            optimizer:    optimiser covering appendage + (optionally) action queries.
+        """
+        squash = self._squash_type()
+        sigma = self.config.rl_action_std
+        clip_eps = self.config.rl_ppo_clip
+
+        # Total discounted return per episode
+        total_returns = []
+        for ep_steps, ep_rewards in all_episodes:
+            G = 0.0
+            for r in reversed(ep_rewards):
+                G = r + self.config.rl_gamma * G
+            total_returns.append(G)
+
+        ret_t = torch.tensor(total_returns, dtype=torch.float32, device=self.device)
+
+        # Group-relative advantage: normalise within the batch
+        if ret_t.std() > 1e-6:
+            adv_per_ep = (ret_t - ret_t.mean()) / (ret_t.std() + 1e-8)
+        else:
+            adv_per_ep = ret_t - ret_t.mean()  # zero if all returns identical
+
+        total_pg = total_ent = 0.0
+
+        for (ep_steps, _), ep_adv in zip(all_episodes, adv_per_ep):
+            if not ep_steps:
+                continue
+
+            features = torch.stack([s.features for s in ep_steps])      # [T, H]
+            old_lp   = torch.stack([s.log_prob for s in ep_steps]).detach()  # [T]
+            old_u    = torch.stack([s.u for s in ep_steps])              # [T] or [T, D]
+
+            # Re-evaluate policy on cached features with current parameters
+            new_action_out = self.graft.appendage(features)              # [T, *]
+            _, new_lp, entropy = self._log_prob_and_entropy(
+                new_action_out, sigma, squash, u_sample=old_u
+            )
+
+            # Clipped importance-weighted policy gradient (GRPO with IS-clip)
+            ratio = torch.exp(new_lp - old_lp)
+            pg_loss = -torch.min(
+                ratio * ep_adv,
+                ratio.clamp(1 - clip_eps, 1 + clip_eps) * ep_adv,
+            ).mean()
+
+            loss = pg_loss - self.config.rl_entropy_coef * entropy.mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(
+                list(self.graft.appendage.parameters()),
+                self.config.grad_clip,
+            )
+            optimizer.step()
+
+            total_pg  += pg_loss.item()
+            total_ent += entropy.mean().item()
+
+        G_count = max(len(all_episodes), 1)
+        return {
+            "rl/pg_loss": total_pg / G_count,
+            "rl/vf_loss": 0.0,
+            "rl/entropy": total_ent / G_count,
+        }
+
+    # ------------------------------------------------------------------ #
     #  Training loop                                                       #
     # ------------------------------------------------------------------ #
 
     def train(self, optimizer: optim.Optimizer | None = None) -> list[dict]:
+        algo = self.config.rl_algorithm.upper()
         print(f"{'='*60}")
-        print(f"  RL Fine-tuning (PPO) — {type(self.graft.appendage).__name__}")
+        print(f"  RL Fine-tuning ({algo}) — {type(self.graft.appendage).__name__}")
         print(f"  Steps: {self.config.rl_steps}  |  Device: {self.device}")
         print(
-            f"  clip={self.config.rl_ppo_clip}  epochs={self.config.rl_ppo_epochs}"
-            f"  GAE λ={self.config.rl_gae_lambda}  std={self.config.rl_action_std}"
+            f"  clip={self.config.rl_ppo_clip}  episodes/update={self.config.rl_episodes_per_update}"
+            f"  std={self.config.rl_action_std}"
         )
         print(f"{'='*60}")
 
         if optimizer is None:
-            optimizer = optim.Adam(
-                list(self.graft.appendage.parameters())
-                + list(self._value_head.parameters()),
-                lr=self.config.appendage_lr * 0.1,
-            )
+            opt_params = list(self.graft.appendage.parameters())
+            if self._value_head is not None:
+                opt_params += list(self._value_head.parameters())
+            optimizer = optim.Adam(opt_params, lr=self.config.appendage_lr * 0.1)
 
-        acc_steps: list[_RolloutStep] = []
+        acc_episodes: list[tuple[list[_RolloutStep], list[float]]] = []
+        # Also keep flat lists for PPO (which needs concatenated steps)
+        acc_steps_flat: list[_RolloutStep] = []
         acc_rewards_per_ep: list[list[float]] = []
         n_episodes = 0
+        last_info: dict = {}
 
-        pbar = tqdm(total=self.config.rl_steps, desc="RL")
+        pbar = tqdm(total=self.config.rl_steps, desc=f"RL ({algo})")
         while self._global_step < self.config.rl_steps:
             steps, rewards, info = self._run_episode()
-            acc_steps.extend(steps)
+            acc_episodes.append((steps, rewards))
+            acc_steps_flat.extend(steps)
             acc_rewards_per_ep.append(rewards)
+            last_info = info
             n_episodes += 1
 
             if n_episodes % self.config.rl_episodes_per_update == 0:
-                # Per-episode GAE, then concatenate across the batch
-                all_adv_list, all_ret_list = [], []
-                start = 0
-                for ep_rewards in acc_rewards_per_ep:
-                    T = len(ep_rewards)
-                    ep_steps = acc_steps[start : start + T]
-                    adv, ret = self._compute_gae(ep_rewards, [s.value for s in ep_steps])
-                    all_adv_list.append(adv)
-                    all_ret_list.append(ret)
-                    start += T
+                if self.config.rl_algorithm == "grpo":
+                    update_metrics = self._grpo_update(acc_episodes, optimizer)
+                else:
+                    # PPO with per-episode GAE
+                    all_adv_list, all_ret_list = [], []
+                    start = 0
+                    for ep_rewards in acc_rewards_per_ep:
+                        T = len(ep_rewards)
+                        ep_steps = acc_steps_flat[start : start + T]
+                        adv, ret = self._compute_gae(
+                            ep_rewards, [s.value for s in ep_steps]
+                        )
+                        all_adv_list.append(adv)
+                        all_ret_list.append(ret)
+                        start += T
 
-                all_adv = torch.cat(all_adv_list)
-                all_ret = torch.cat(all_ret_list)
+                    all_adv = torch.cat(all_adv_list)
+                    all_ret = torch.cat(all_ret_list)
+                    if all_adv.std() > 1e-6:
+                        all_adv = (all_adv - all_adv.mean()) / (all_adv.std() + 1e-8)
+                    update_metrics = self._ppo_update(
+                        acc_steps_flat, all_adv, all_ret, optimizer
+                    )
 
-                # Normalise advantages across the full batch
-                if all_adv.std() > 1e-6:
-                    all_adv = (all_adv - all_adv.mean()) / (all_adv.std() + 1e-8)
-
-                update_metrics = self._ppo_update(acc_steps, all_adv, all_ret, optimizer)
+                info = last_info
 
                 mean_ep_reward = (
                     sum(sum(r) for r in acc_rewards_per_ep) / len(acc_rewards_per_ep)
@@ -871,7 +994,8 @@ class RLTrainer:
                         f"success={info.get('success', False)}"
                     )
 
-                acc_steps.clear()
+                acc_episodes.clear()
+                acc_steps_flat.clear()
                 acc_rewards_per_ep.clear()
                 self._global_step += 1
 
@@ -899,11 +1023,12 @@ class CurriculumConfig:
     # RL phase (set to 0 to skip)
     rl_steps: int = 500
     rl_max_steps_per_episode: int = 30  # cap per-episode rollout length
-    rl_gae_lambda: float = 0.95         # GAE smoothing parameter (λ)
-    rl_ppo_clip: float = 0.2            # PPO clip ratio (ε)
-    rl_ppo_epochs: int = 4              # gradient epochs per rollout batch
+    rl_gae_lambda: float = 0.95         # GAE smoothing parameter (λ)  [PPO only]
+    rl_ppo_clip: float = 0.2            # surrogate clip ratio (ε)
+    rl_ppo_epochs: int = 4              # gradient epochs per rollout batch  [PPO only]
     rl_action_std: float = 0.3          # std for continuous action distributions
-    rl_episodes_per_update: int = 4     # episodes per rollout batch
+    rl_episodes_per_update: int = 8     # episodes per rollout batch
+    rl_algorithm: str = "grpo"          # "grpo" (default) or "ppo"
 
     # Shared
     appendage_lr: float = 1e-4
@@ -941,6 +1066,7 @@ class CurriculumConfig:
             rl_ppo_epochs=self.rl_ppo_epochs,
             rl_action_std=self.rl_action_std,
             rl_episodes_per_update=self.rl_episodes_per_update,
+            rl_algorithm=self.rl_algorithm,
             log_every=self.log_every,
             eval_every=self.eval_every,
             eval_episodes=self.eval_episodes,
@@ -1006,11 +1132,10 @@ class TrainingCurriculum:
                 config=trainer_cfg,
                 device=device,
             )
-            rl_optimizer = optim.Adam(
-                list(self.graft.appendage.parameters())
-                + list(rl_trainer._value_head.parameters()),
-                lr=self.config.appendage_lr * 0.1,
-            )
+            opt_params = list(self.graft.appendage.parameters())
+            if rl_trainer._value_head is not None:
+                opt_params += list(rl_trainer._value_head.parameters())
+            rl_optimizer = optim.Adam(opt_params, lr=self.config.appendage_lr * 0.1)
             rl_metrics = rl_trainer.train(optimizer=rl_optimizer)
 
         return {"bc": bc_metrics, "rl": rl_metrics}

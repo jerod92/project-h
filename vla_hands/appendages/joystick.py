@@ -10,11 +10,17 @@ Suitable for:
 Architecture:
     hidden_state → LayerNorm → Linear(hidden, mid) → GELU
                 → Linear(mid, 64)  → GELU
-                → Linear(64, 2)    → Tanh  →  (x, y) ∈ [-1, 1]²
+                → Linear(64, 2)    →  pre-squash logits (unbounded)
 
-The Tanh naturally constrains the output range. Orthogonal weight init with
-small gain (0.01) ensures the head starts near zero, letting the VLM's
-pre-existing representations guide early training without catastrophic gradients.
+The network deliberately omits the final Tanh activation. Tanh squashing is
+applied *externally* by the trainer (RL sampling) and action_loss (BC).
+
+Rationale: if Tanh is baked into the network, BC training drives pre-tanh values
+to atanh(target) ≈ 1.5–2.5 for unit-magnitude expert actions. In the subsequent
+RL phase, exploration noise (std σ) is added in pre-tanh space, but the effective
+std in action space shrinks to σ·(1 − tanh²(u_mean)). At u_mean=2 this is only
+~8% of σ — the policy is essentially frozen after BC. Keeping the network in
+unbounded (logit) space ensures σ is always applied in a consistent regime.
 """
 
 from typing import NamedTuple
@@ -62,7 +68,7 @@ class JoystickAppendage(BaseAppendage):
             nn.Linear(intermediate_dim, 64),
             nn.GELU(),
             nn.Linear(64, 2),
-            nn.Tanh(),
+            # No Tanh here — see module docstring for why.
         )
 
         self._action_spec = ActionSpec(
@@ -79,9 +85,9 @@ class JoystickAppendage(BaseAppendage):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
-        # Small gain on output layer only — start predictions near zero
-        # without crushing gradient flow through hidden layers.
-        output_linear = self.net[-2]  # Linear(64, 2), before Tanh
+        # Small gain on output layer — start logits near zero so the squashed
+        # action is near the origin, giving maximum exploration headroom at RL init.
+        output_linear = self.net[-1]  # Linear(64, 2), now the final layer
         nn.init.orthogonal_(output_linear.weight, gain=0.01)
         nn.init.zeros_(output_linear.bias)
 
@@ -94,7 +100,10 @@ class JoystickAppendage(BaseAppendage):
         Args:
             hidden_state: [batch, hidden_dim]
         Returns:
-            action: [batch, 2] with values in [-1, 1]
+            logits: [batch, 2] — pre-squash, unbounded. Apply torch.tanh() to get
+                    the action in [-1, 1]². The trainer and action_loss do this
+                    automatically; callers that want a bounded action should call
+                    torch.tanh(appendage(features)).
         """
         return self.net(hidden_state)
 
@@ -105,10 +114,14 @@ class JoystickAppendage(BaseAppendage):
         weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
-        Huber loss between predicted and target joystick positions.
+        Huber loss between squashed prediction and target joystick positions.
+
+        predicted is the raw pre-squash logit from forward(); tanh is applied here
+        so the loss is always computed in the bounded action space [-1, 1]².
         Huber is more robust than MSE to occasional large expert-policy deviations.
         """
-        loss = F.huber_loss(predicted, target, delta=0.5, reduction="none")  # [batch, 2]
+        squashed = torch.tanh(predicted)
+        loss = F.huber_loss(squashed, target, delta=0.5, reduction="none")  # [batch, 2]
         if weights is not None:
             loss = (loss * weights.unsqueeze(-1)).mean()
         else:
@@ -119,4 +132,9 @@ class JoystickAppendage(BaseAppendage):
         t = action_tensor.detach().cpu().float()
         if t.dim() > 1:
             t = t[0]
+        # action_tensor may be either pre-squash logits (from forward()) or
+        # already-squashed values (from _select_action). Apply tanh only when
+        # values are outside [-1, 1], i.e. clearly in logit space.
+        if t.abs().max() > 1.0:
+            t = torch.tanh(t)
         return JoystickAction(x=float(t[0]), y=float(t[1]))
