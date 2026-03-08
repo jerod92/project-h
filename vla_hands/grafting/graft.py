@@ -97,10 +97,27 @@ class GraftConfig:
     #   "last"  — hidden state at last non-padding token position (default, recommended)
     #   "first" — hidden state at position 0 (CLS-like)
     #   "mean"  — mean-pooled over non-padding tokens
+    # (used only when n_action_tokens == 0; cross-attention takes precedence otherwise)
     feature_extraction: str = "last"
 
     # Hidden dimension of the VLM (auto-detected from model.config if None)
     hidden_dim: int | None = None
+
+    # ── Groot-inspired cross-attention action queries ────────────────────
+    # Number of learnable action query tokens that attend over the full hidden
+    # state sequence. Set to 0 to disable (falls back to feature_extraction).
+    #
+    # Motivation: the default "last token" extraction collapses the entire image
+    # and text sequence to a single vector — information that may not align with
+    # what the action head needs. Learned query tokens (à la GR00T action tokens)
+    # allow the model to selectively attend to spatially or semantically relevant
+    # parts of the sequence, producing a richer action feature.
+    #
+    # Each query specialises independently during training (one may focus on
+    # object position, another on the instruction verb, etc.). Their outputs are
+    # mean-pooled before being passed to the appendage, keeping the interface
+    # identical to the single-vector case.
+    n_action_tokens: int = 4
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -130,6 +147,12 @@ class VLAGraft(nn.Module):
 
         if self.config.hidden_dim is None:
             self.config.hidden_dim = self._detect_hidden_dim()
+
+        # ── Groot-inspired cross-attention action queries ────────────────
+        self._action_queries: nn.Parameter | None = None
+        self._action_cross_attn: nn.MultiheadAttention | None = None
+        if self.config.n_action_tokens > 0:
+            self._setup_action_queries()
 
         # Register vision encoder hook when the appendage requests it
         self._vision_hook: _VisionHook | None = None
@@ -229,11 +252,88 @@ class VLAGraft(nn.Module):
     #  Feature extraction                                                  #
     # ------------------------------------------------------------------ #
 
+    def _setup_action_queries(self) -> None:
+        """
+        Build the learnable action query tokens and cross-attention layer.
+
+        Called once from __init__ when n_action_tokens > 0.  The queries are
+        stored as nn.Parameter so they are trained alongside the appendage.
+
+        The cross-attention uses MultiheadAttention with batch_first=True:
+          - Queries: [batch, n_q, hidden]  (expanded from learned [n_q, hidden])
+          - Keys/Values: [batch, seq, hidden]  (full VLM hidden state sequence)
+          - Output: [batch, n_q, hidden] → mean-pooled → [batch, hidden]
+
+        num_heads is chosen as the largest power of two that divides hidden_dim
+        (up to 8), guaranteeing compatibility across all VLM families.
+        """
+        hidden = self.config.hidden_dim
+        n_q = self.config.n_action_tokens
+
+        num_heads = 1
+        for h in [8, 4, 2, 1]:
+            if hidden % h == 0:
+                num_heads = h
+                break
+
+        self._action_queries = nn.Parameter(torch.empty(n_q, hidden))
+        nn.init.trunc_normal_(self._action_queries, std=0.02)
+
+        self._action_cross_attn = nn.MultiheadAttention(
+            embed_dim=hidden,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=0.0,
+        )
+
     def _extract_features(
         self,
         hidden_states: torch.Tensor,   # [batch, seq, hidden]
         attention_mask: torch.Tensor | None,
     ) -> torch.Tensor:                  # [batch, hidden]
+        """
+        Extract a single action feature vector from the VLM's hidden states.
+
+        When n_action_tokens > 0 (default), uses Groot-style cross-attention:
+          learned queries attend over the full token sequence → mean-pooled.
+        When n_action_tokens == 0, falls back to the feature_extraction mode.
+        """
+        if self.config.n_action_tokens > 0 and self._action_queries is not None:
+            return self._extract_features_cross_attn(hidden_states, attention_mask)
+        return self._extract_features_single(hidden_states, attention_mask)
+
+    def _extract_features_cross_attn(
+        self,
+        hidden_states: torch.Tensor,   # [batch, seq, hidden]
+        attention_mask: torch.Tensor | None,
+    ) -> torch.Tensor:                  # [batch, hidden]
+        """Cross-attention feature extraction using learned action query tokens."""
+        batch = hidden_states.size(0)
+
+        # Expand shared query parameters to batch dimension
+        queries = self._action_queries.unsqueeze(0).expand(batch, -1, -1)  # [B, n_q, H]
+
+        # key_padding_mask: True means *ignore* that position (MHA convention)
+        key_padding_mask = None
+        if attention_mask is not None:
+            key_padding_mask = (attention_mask == 0)  # [B, seq]
+
+        attended, _ = self._action_cross_attn(
+            query=queries,
+            key=hidden_states,
+            value=hidden_states,
+            key_padding_mask=key_padding_mask,
+        )  # [B, n_q, H]
+
+        # Mean-pool the query slots → single feature vector per sample
+        return attended.mean(dim=1)  # [B, H]
+
+    def _extract_features_single(
+        self,
+        hidden_states: torch.Tensor,   # [batch, seq, hidden]
+        attention_mask: torch.Tensor | None,
+    ) -> torch.Tensor:                  # [batch, hidden]
+        """Legacy single-vector extraction (used when n_action_tokens == 0)."""
         mode = self.config.feature_extraction
 
         if mode == "last":
@@ -273,11 +373,18 @@ class VLAGraft(nn.Module):
         """
         Return AdamW-style parameter groups.
 
-        Appendage params always have the higher LR; VLM trainable params (those
-        whose requires_grad was set True by the FreezingCurriculum) use a much
-        smaller LR to avoid catastrophic forgetting.
+        Appendage params + action query params always have the higher LR;
+        VLM trainable params (those whose requires_grad was set True by the
+        FreezingCurriculum) use a much smaller LR to avoid catastrophic forgetting.
         """
-        groups = [{"params": list(self.appendage.parameters()), "lr": appendage_lr}]
+        # Action-side parameters: appendage MLP + learned query tokens + cross-attn
+        action_params = list(self.appendage.parameters())
+        if self._action_queries is not None:
+            action_params.append(self._action_queries)
+        if self._action_cross_attn is not None:
+            action_params.extend(self._action_cross_attn.parameters())
+
+        groups = [{"params": action_params, "lr": appendage_lr}]
         vlm_params = [p for p in self.vlm.parameters() if p.requires_grad]
         if vlm_params:
             groups.append({"params": vlm_params, "lr": vlm_lr})
@@ -313,14 +420,32 @@ class VLAGraft(nn.Module):
             "appendage_hidden_dim": getattr(self.appendage, "hidden_dim", None),
             "appendage_n_params": self.appendage.num_parameters(),
         }
+        # Save cross-attention query weights if present
+        if self._action_queries is not None and self._action_cross_attn is not None:
+            torch.save(
+                {
+                    "queries": self._action_queries.data,
+                    "cross_attn": self._action_cross_attn.state_dict(),
+                },
+                path / "action_queries.pt",
+            )
         (path / "graft_config.json").write_text(json.dumps(cfg, indent=2))
         print(f"[VLAGraft] Saved to {path}")
 
     def load_appendage(self, path: str | Path, strict: bool = True):
-        """Load appendage weights from a previously saved graft."""
+        """Load appendage weights (and action query weights if saved) from a graft checkpoint."""
         path = Path(path)
         state_dict = torch.load(path / "appendage.pt", map_location="cpu")
         self.appendage.load_state_dict(state_dict, strict=strict)
+
+        query_file = path / "action_queries.pt"
+        if query_file.exists() and self._action_queries is not None:
+            saved = torch.load(query_file, map_location="cpu")
+            self._action_queries.data.copy_(saved["queries"])
+            if self._action_cross_attn is not None:
+                self._action_cross_attn.load_state_dict(saved["cross_attn"])
+            print(f"[VLAGraft] Loaded action queries from {path}")
+
         print(f"[VLAGraft] Loaded appendage from {path}")
 
     @classmethod
@@ -377,6 +502,7 @@ class VLAGraft(nn.Module):
                 config = GraftConfig(
                     feature_extraction=raw.get("feature_extraction", "last"),
                     hidden_dim=raw.get("hidden_dim"),
+                    n_action_tokens=raw.get("n_action_tokens", 4),
                 )
 
         graft = cls(vlm=vlm, appendage=appendage, config=config)
